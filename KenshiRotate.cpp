@@ -271,42 +271,6 @@ static void RestoreOriginalTexture(InventoryIcon* icon)
 }
 
 // =====================================================
-// Helper: Resolve function address from KenshiLib.dll
-// =====================================================
-//
-// GetRealAddress(&Class::Method) fails because without __declspec(dllimport)
-// on the KenshiLib headers, the compiler generates a local JMP stub in our DLL.
-// GetRealAddress asserts the input is within KenshiLib/kenshi range and aborts.
-//
-// Fix: resolve the mangled symbol directly from KenshiLib.dll via GetProcAddress,
-// which gives us the address inside KenshiLib.dll. Then pass that to
-// GetRealAddress to follow KenshiLib's internal JMP stubs into kenshi.exe.
-
-static void* ResolveKenshiLibSymbol(const char* mangledName)
-{
-	static HMODULE klib = NULL;
-	if (!klib)
-	{
-		klib = GetModuleHandleA("KenshiLib");
-		if (!klib)
-			klib = GetModuleHandleA("KenshiLib.dll");
-	}
-	if (!klib)
-	{
-		ErrorLog("[KenshiRotate] Could not find KenshiLib.dll module");
-		return NULL;
-	}
-	void* addr = (void*)GetProcAddress(klib, mangledName);
-	if (!addr)
-	{
-		std::string msg = "[KenshiRotate] GetProcAddress failed for: ";
-		msg += mangledName;
-		ErrorLog(msg);
-	}
-	return addr;
-}
-
-// =====================================================
 // Hook: InventoryGUI::_NV_update — middle-click rotation
 // =====================================================
 
@@ -559,102 +523,89 @@ __declspec(dllexport) void startPlugin()
 {
 	DebugLog("[KenshiRotate] Starting plugin...");
 
-	// --- Hook 1: InventoryGUI::_NV_update for middle-click rotation ---
-	// Mangled name from: dumpbin /LINKERMEMBER kenshilib.lib
-	void* updateAddr = ResolveKenshiLibSymbol(
-		"?_NV_update@InventoryGUI@@QEAAXXZ");
-	if (updateAddr)
+	// --- Diagnostic: compare &Class::Method vs GetProcAddress ---
 	{
-		intptr_t realAddr = KenshiLib::GetRealAddress(updateAddr);
-		if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-			(void*)realAddr,
-			(void*)InventoryGUI_update_hook,
-			(void**)&InventoryGUI_update_orig))
-		{
-			ErrorLog("[KenshiRotate] Failed to hook InventoryGUI::_NV_update");
-		}
-		else
-		{
-			DebugLog("[KenshiRotate] Hooked InventoryGUI::_NV_update OK");
-		}
+		HMODULE klib = GetModuleHandleA("KenshiLib");
+		if (!klib) klib = GetModuleHandleA("KenshiLib.dll");
+
+		void* fromRef = NULL;
+		void (InventoryGUI::*mfp)() = &InventoryGUI::_NV_update;
+		fromRef = (void*&)mfp;
+
+		void* fromGPA = (void*)GetProcAddress(klib, "?_NV_update@InventoryGUI@@QEAAXXZ");
+
+		std::stringstream ss;
+		ss << "[KenshiRotate] DIAG: &Method = 0x" << std::hex << (uintptr_t)fromRef
+		   << ", GetProcAddress = 0x" << (uintptr_t)fromGPA
+		   << (fromRef == fromGPA ? " (MATCH)" : " (MISMATCH)");
+		DebugLog(ss.str());
+	}
+
+	// --- Hook 1: InventoryGUI::_NV_update for middle-click rotation ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryGUI::_NV_update),
+		(void*)InventoryGUI_update_hook,
+		(void**)&InventoryGUI_update_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook InventoryGUI::_NV_update");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked InventoryGUI::_NV_update OK");
 	}
 
 	// --- Hook 2: InventoryIcon::_CONSTRUCTOR for icon resizing ---
-	void* iconCtorAddr = ResolveKenshiLibSymbol(
-		"?_CONSTRUCTOR@InventoryIcon@@QEAAPEAV1@PEAVItem@@AEBU?$TPoint@H@types@MyGUI@@PEAVWidget@5@@Z");
-	if (iconCtorAddr)
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryIcon::_CONSTRUCTOR),
+		(void*)InventoryIcon_ctor_hook,
+		(void**)&InventoryIcon_ctor_orig))
 	{
-		intptr_t realAddr = KenshiLib::GetRealAddress(iconCtorAddr);
-		if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-			(void*)realAddr,
-			(void*)InventoryIcon_ctor_hook,
-			(void**)&InventoryIcon_ctor_orig))
-		{
-			ErrorLog("[KenshiRotate] Failed to hook InventoryIcon::_CONSTRUCTOR");
-		}
-		else
-		{
-			DebugLog("[KenshiRotate] Hooked InventoryIcon::_CONSTRUCTOR OK");
-		}
+		ErrorLog("[KenshiRotate] Failed to hook InventoryIcon::_CONSTRUCTOR");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked InventoryIcon::_CONSTRUCTOR OK");
 	}
 
 	// --- Hook 3: getBestPositionSlot fix ---
-	void* bpsAddr = ResolveKenshiLibSymbol(
-		"?getBestPositionSlot@InventorySectionGUI@@QEAA_NAEBU?$TPoint@H@types@MyGUI@@PEAVInventorySection@@PEAVItem@@AEAU234@@Z");
-	if (bpsAddr)
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventorySectionGUI::getBestPositionSlot),
+		(void*)getBestPositionSlot_hook,
+		(void**)&getBestPositionSlot_orig))
 	{
-		intptr_t realAddr = KenshiLib::GetRealAddress(bpsAddr);
-		if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-			(void*)realAddr,
-			(void*)getBestPositionSlot_hook,
-			(void**)&getBestPositionSlot_orig))
-		{
-			ErrorLog("[KenshiRotate] Failed to hook getBestPositionSlot");
-		}
-		else
-		{
-			DebugLog("[KenshiRotate] Hooked getBestPositionSlot OK");
-		}
+		ErrorLog("[KenshiRotate] Failed to hook getBestPositionSlot");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked getBestPositionSlot OK");
 	}
 
 	// --- Hook 4: Item::serialiseInInventory for saving rotation flag ---
-	void* serialiseInvAddr = ResolveKenshiLibSymbol(
-		"?_NV_serialiseInInventory@Item@@QEAAPEAVGameData@@PEAVGameDataContainer@@PEAV2@@Z");
-	if (serialiseInvAddr)
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&Item::_NV_serialiseInInventory),
+		(void*)Item_serialiseInv_hook,
+		(void**)&Item_serialiseInv_orig))
 	{
-		intptr_t realAddr = KenshiLib::GetRealAddress(serialiseInvAddr);
-		if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-			(void*)realAddr,
-			(void*)Item_serialiseInv_hook,
-			(void**)&Item_serialiseInv_orig))
-		{
-			ErrorLog("[KenshiRotate] Failed to hook Item::serialiseInInventory");
-		}
-		else
-		{
-			g_hookSaveOK = true;
-			DebugLog("[KenshiRotate] Hooked Item::serialiseInInventory OK");
-		}
+		ErrorLog("[KenshiRotate] Failed to hook Item::serialiseInInventory");
+	}
+	else
+	{
+		g_hookSaveOK = true;
+		DebugLog("[KenshiRotate] Hooked Item::serialiseInInventory OK");
 	}
 
 	// --- Hook 5: Item::loadFromSerialiseInInventory for restoring rotation ---
-	void* loadInvAddr = ResolveKenshiLibSymbol(
-		"?_NV_loadFromSerialiseInInventory@Item@@QEAAXPEAVGameDataContainer@@PEAVGameData@@@Z");
-	if (loadInvAddr)
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&Item::_NV_loadFromSerialiseInInventory),
+		(void*)Item_loadInv_hook,
+		(void**)&Item_loadInv_orig))
 	{
-		intptr_t realAddr = KenshiLib::GetRealAddress(loadInvAddr);
-		if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-			(void*)realAddr,
-			(void*)Item_loadInv_hook,
-			(void**)&Item_loadInv_orig))
-		{
-			ErrorLog("[KenshiRotate] Failed to hook Item::loadFromSerialiseInInventory");
-		}
-		else
-		{
-			g_hookLoadOK = true;
-			DebugLog("[KenshiRotate] Hooked Item::loadFromSerialiseInInventory OK");
-		}
+		ErrorLog("[KenshiRotate] Failed to hook Item::loadFromSerialiseInInventory");
+	}
+	else
+	{
+		g_hookLoadOK = true;
+		DebugLog("[KenshiRotate] Hooked Item::loadFromSerialiseInInventory OK");
 	}
 
 	if (!g_hookSaveOK || !g_hookLoadOK)

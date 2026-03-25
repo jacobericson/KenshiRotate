@@ -32,6 +32,9 @@
 #include <sstream>
 
 #include <kenshi/GameData.h>
+#include <kenshi/gui/OptionsWindow.h>
+
+#include "Settings.h"
 
 // =====================================================
 // Rotation State (runtime tracking)
@@ -275,7 +278,7 @@ static void RestoreOriginalTexture(InventoryIcon* icon)
 // =====================================================
 
 void (*InventoryGUI_update_orig)(InventoryGUI*) = NULL;
-static bool g_lastMmbState = false;
+static bool g_lastTriggerState = false;
 
 // Expose protected methods via accessor subclass.
 class InventoryGUIAccess : public InventoryGUI
@@ -369,10 +372,23 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	if (thisptr->ownerInventory != NULL)
 		return;
 
-	// Check middle mouse button (debounced — only trigger on rising edge)
-	bool mmbDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+	// Skip rotation during key capture (settings rebind in progress)
+	if (RotateSettings::IsCapturing())
+		return;
 
-	if (mmbDown && !g_lastMmbState)
+	// Check configured rotation trigger (debounced — only on rising edge)
+	bool triggerDown = false;
+	if (RotateSettings::GetBindType() == BIND_MIDDLE_MOUSE)
+	{
+		triggerDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+	}
+	else
+	{
+		triggerDown = key != NULL && key->keyboard != NULL &&
+			key->keyboard->isKeyDown(RotateSettings::GetKeyCode());
+	}
+
+	if (triggerDown && !g_lastTriggerState)
 	{
 		// Search this GUI first, then fall back to child GUI
 		Item* mouseItem = CallGetMouseItem(thisptr);
@@ -387,7 +403,7 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 			TryRotateItem(mouseItem, sourceGUI);
 	}
 
-	g_lastMmbState = mmbDown;
+	g_lastTriggerState = triggerDown;
 }
 
 // =====================================================
@@ -516,12 +532,30 @@ void Item_loadInv_hook(Item* thisptr, GameDataContainer* container, GameData* st
 }
 
 // =====================================================
+// Hook: OptionsWindow::update — settings injection + key capture
+// =====================================================
+// Widgets in the Options tab get destroyed when the menu closes.
+// Like RE_Kenshi, we re-inject every frame (InjectModsTabUI is
+// idempotent — it checks for existing widgets before creating).
+
+void (*OptionsWindow_update_orig)(OptionsWindow*) = NULL;
+
+void OptionsWindow_update_hook(OptionsWindow* thisptr)
+{
+	OptionsWindow_update_orig(thisptr);
+	RotateSettings::InjectModsTabUI();
+	RotateSettings::ProcessCapture();
+}
+
+// =====================================================
 // Plugin Entry Point
 // =====================================================
 
 __declspec(dllexport) void startPlugin()
 {
 	DebugLog("[KenshiRotate] Starting plugin...");
+
+	RotateSettings::Init();
 
 	// --- Diagnostic: compare &Class::Method vs GetProcAddress ---
 	{
@@ -541,7 +575,7 @@ __declspec(dllexport) void startPlugin()
 		DebugLog(ss.str());
 	}
 
-	// --- Hook 1: InventoryGUI::_NV_update for middle-click rotation ---
+	// --- Hook 1: InventoryGUI::_NV_update for rotation trigger ---
 	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
 		(void*)KenshiLib::GetRealAddress(&InventoryGUI::_NV_update),
 		(void*)InventoryGUI_update_hook,
@@ -610,6 +644,19 @@ __declspec(dllexport) void startPlugin()
 
 	if (!g_hookSaveOK || !g_hookLoadOK)
 		ErrorLog("[KenshiRotate] WARNING: persistence hooks incomplete — rotation will be disabled");
+
+	// --- Hook 6: OptionsWindow::update for settings UI + key capture ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&OptionsWindow::_NV_update),
+		(void*)OptionsWindow_update_hook,
+		(void**)&OptionsWindow_update_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook OptionsWindow::update");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked OptionsWindow::update OK");
+	}
 
 	DebugLog("[KenshiRotate] Plugin started successfully");
 }

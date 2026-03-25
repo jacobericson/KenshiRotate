@@ -2,7 +2,7 @@
 
 Inventory item rotation mod for Kenshi.
 
-Rotate items in the grid-based inventory by middle-clicking while hovering over them.
+Rotate items in the grid-based inventory by hovering over them and pressing your configured rotation key (middle-click by default).
 
 ## Features
 
@@ -11,6 +11,8 @@ Rotate items in the grid-based inventory by middle-clicking while hovering over 
 - True 90-degree texture rotation with correct icon rendering
 - Charge bars (food, medkits) display correctly on rotated items
 - Rotation state persists across save/load
+- Configurable key binding (middle mouse or any keyboard key) via Options > MODS tab
+- Key conflict detection warns if your chosen key is already bound in-game
 - Safe fallback if rotation doesn't fit: item reverts to original orientation or is dropped if no longer fits.
 
 ## Requirements
@@ -25,9 +27,13 @@ Rotate items in the grid-based inventory by middle-clicking while hovering over 
 
 ## Usage
 
-Open any inventory and **middle-click** on a non-square item to rotate it. The item's grid dimensions and icon will swap (e.g., a 2x1 item becomes 1x2). Middle-click again to rotate back.
+Open any inventory and **middle-click** (default) on a non-square item to rotate it. The item's grid dimensions and icon will swap (e.g., a 2x1 item becomes 1x2). Press the rotation key again to rotate back.
 
 Rotation is blocked if there isn't enough space for the rotated dimensions.
+
+### Changing the rotation key
+
+Go to **Options > MODS** tab and find the **KenshiRotate** section. Click **Change**, then press the key you want to use (any keyboard key or middle mouse button). Press **Escape** to cancel, or **Reset** to revert to middle mouse. Your binding is saved to `KenshiRotate.cfg` and persists across game restarts.
 
 ## Building from Source
 
@@ -39,13 +45,14 @@ Link dependencies: `KenshiLib.lib`, `MyGUIEngine_x64.lib`, `OgreMain_x64.lib`, `
 
 ## How It Works
 
-The plugin hooks five game functions via KenshiLib:
+The plugin hooks six game functions via KenshiLib:
 
-1. **`InventoryGUI::update`** - Detects middle-click input and performs the rotation (remove item, swap dimensions, re-add with validation)
+1. **`InventoryGUI::update`** - Detects the configured rotation key and performs the rotation (remove item, swap dimensions, re-add with validation)
 2. **`InventoryIcon::_CONSTRUCTOR`** - Resizes icons and applies rotated textures when inventory icons are created
 3. **`InventorySectionGUI::getBestPositionSlot`** - Fixes grid highlight bounds for rotated items
 4. **`Item::serialiseInInventory`** - Saves rotation state into the item's GameData record
 5. **`Item::loadFromSerialiseInInventory`** - Restores rotation state on load
+6. **`OptionsWindow::update`** - Injects the key binding UI into the MODS tab and handles key capture
 
 Rotation state is persisted by injecting a custom boolean field into each item's save record. No external state files are needed - rotation data travels with the item through Kenshi's native save system.
 

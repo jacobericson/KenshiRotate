@@ -47,7 +47,6 @@
 static std::set<std::string> g_rotatedItems;
 static bool g_hookSaveOK = false;
 static bool g_hookLoadOK = false;
-static bool g_needsClear = true;
 
 static std::string getHandleKey(Item* item)
 {
@@ -421,6 +420,7 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 	if (item && isRotated(item))
 	{
 		MyGUI::types::TSize<int> origSize = thisptr->getSize();
+
 		int newW = origSize.height;
 		int newH = origSize.width;
 
@@ -488,8 +488,6 @@ GameData* (*Item_serialiseInv_orig)(Item*, GameDataContainer*, GameData*) = NULL
 
 GameData* Item_serialiseInv_hook(Item* thisptr, GameDataContainer* container, GameData* refList)
 {
-	g_needsClear = true;
-
 	GameData* state = Item_serialiseInv_orig(thisptr, container, refList);
 
 	// Inject "rotated" flag into the item's save record
@@ -512,13 +510,6 @@ void Item_loadInv_hook(Item* thisptr, GameDataContainer* container, GameData* st
 	if (!state)
 		return;
 
-	// Clear stale rotation tracking on first item of a new load cycle
-	if (g_needsClear)
-	{
-		g_rotatedItems.clear();
-		g_needsClear = false;
-	}
-
 	// Check if this item was saved with our custom "rotated" flag
 	auto it = state->bdata.find("rotated");
 	if (it != state->bdata.end() && it->second)
@@ -528,6 +519,13 @@ void Item_loadInv_hook(Item* thisptr, GameDataContainer* container, GameData* st
 
 		// Track in runtime set for this session
 		setRotated(thisptr, true);
+	}
+	else
+	{
+		// Clean up stale handle from a previous session if present.
+		// Within a session handles are unique, so this only fires
+		// after a full reload when a handle is reassigned.
+		g_rotatedItems.erase(getHandleKey(thisptr));
 	}
 }
 
@@ -556,24 +554,6 @@ __declspec(dllexport) void startPlugin()
 	DebugLog("[KenshiRotate] Starting plugin...");
 
 	RotateSettings::Init();
-
-	// --- Diagnostic: compare &Class::Method vs GetProcAddress ---
-	{
-		HMODULE klib = GetModuleHandleA("KenshiLib");
-		if (!klib) klib = GetModuleHandleA("KenshiLib.dll");
-
-		void* fromRef = NULL;
-		void (InventoryGUI::*mfp)() = &InventoryGUI::_NV_update;
-		fromRef = (void*&)mfp;
-
-		void* fromGPA = (void*)GetProcAddress(klib, "?_NV_update@InventoryGUI@@QEAAXXZ");
-
-		std::stringstream ss;
-		ss << "[KenshiRotate] DIAG: &Method = 0x" << std::hex << (uintptr_t)fromRef
-		   << ", GetProcAddress = 0x" << (uintptr_t)fromGPA
-		   << (fromRef == fromGPA ? " (MATCH)" : " (MISMATCH)");
-		DebugLog(ss.str());
-	}
 
 	// --- Hook 1: InventoryGUI::_NV_update for rotation trigger ---
 	if (KenshiLib::SUCCESS != KenshiLib::AddHook(

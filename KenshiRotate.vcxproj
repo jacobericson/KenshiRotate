@@ -78,11 +78,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="KenshiRotate.cpp" />
-    <ClCompile Include="Settings.cpp" />
+    <ClCompile Include="src\KenshiRotate.cpp" />
+    <ClCompile Include="src\Settings.cpp" />
+    <ClCompile Include="src\Translate.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Settings.h" />
+    <ClInclude Include="src\Settings.h" />
+    <ClInclude Include="src\Translate.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

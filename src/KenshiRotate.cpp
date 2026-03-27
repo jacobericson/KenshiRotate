@@ -35,6 +35,7 @@
 #include <kenshi/gui/OptionsWindow.h>
 
 #include "Settings.h"
+#include "Translate.h"
 
 // =====================================================
 // Rotation State (runtime tracking)
@@ -297,17 +298,17 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 {
 	if (item->isEquipped)
 	{
-		ou->showPlayerAMessage("Cannot rotate: item is equipped", false);
+		ou->showPlayerAMessage(Tr(TR_ERR_EQUIPPED), false);
 		return;
 	}
 	if (item->itemWidth == item->itemHeight)
 	{
-		ou->showPlayerAMessage("Cannot rotate: item is square", false);
+		ou->showPlayerAMessage(Tr(TR_ERR_SQUARE), false);
 		return;
 	}
 	if (!g_hookSaveOK || !g_hookLoadOK)
 	{
-		ou->showPlayerAMessage("Cannot rotate: save/load hooks failed", false);
+		ou->showPlayerAMessage(Tr(TR_ERR_HOOKS_FAILED), false);
 		return;
 	}
 
@@ -325,7 +326,7 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 	{
 		// Doesn't fit rotated — revert and put back
 		SwapItemDimensions(item);
-		ou->showPlayerAMessage("Cannot rotate: not enough space", false);
+		ou->showPlayerAMessage(Tr(TR_ERR_NO_SPACE), false);
 		if (!section->_NV_addItem(item, 1))
 			ErrorLog("[KenshiRotate] CRITICAL: failed to revert item after rotation rejection");
 		return;
@@ -553,6 +554,7 @@ __declspec(dllexport) void startPlugin()
 {
 	DebugLog("[KenshiRotate] Starting plugin...");
 
+	DetectLanguage();
 	RotateSettings::Init();
 
 	// --- Hook 1: InventoryGUI::_NV_update for rotation trigger ---

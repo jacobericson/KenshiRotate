@@ -5,6 +5,7 @@
 #include <Windows.h>
 
 #include "Settings.h"
+#include "Translate.h"
 
 #include <Debug.h>
 #include <kenshi/Globals.h>
@@ -160,7 +161,7 @@ static bool IsBlacklisted(OIS::KeyCode kc)
 static std::string GetKeyDisplayName(BindType type, OIS::KeyCode kc)
 {
 	if (type == BIND_MIDDLE_MOUSE)
-		return "Middle Mouse";
+		return Tr(TR_MIDDLE_MOUSE);
 
 	if (key != NULL)
 		return key->keyString((int)kc, true);
@@ -186,7 +187,7 @@ static std::string GetConflictText(BindType type, OIS::KeyCode kc)
 	if (cmd.empty())
 		return "";
 
-	return "Warning: bound to '" + cmd + "'";
+	return std::string(Tr(TR_CONFLICT_PREFIX)) + cmd + Tr(TR_CONFLICT_SUFFIX);
 }
 
 static void UpdateLabels()
@@ -194,7 +195,7 @@ static void UpdateLabels()
 	if (g_keyLabel != NULL)
 	{
 		std::string name = GetKeyDisplayName(g_bindType, g_keyCode);
-		g_keyLabel->setCaption("Rotate key: " + name);
+		g_keyLabel->setCaption(std::string(Tr(TR_ROTATE_KEY_PREFIX)) + name);
 	}
 	if (g_conflictLabel != NULL)
 		g_conflictLabel->setCaption(GetConflictText(g_bindType, g_keyCode));
@@ -208,9 +209,9 @@ static void OnChangePressed(MyGUI::Widget* sender)
 {
 	g_captureMode = true;
 	if (g_changeBtn != NULL)
-		g_changeBtn->setCaption("Press a key...");
+		g_changeBtn->setCaption(Tr(TR_PRESS_A_KEY));
 	if (g_conflictLabel != NULL)
-		g_conflictLabel->setCaption("Middle mouse or keyboard. Esc to cancel.");
+		g_conflictLabel->setCaption(Tr(TR_CAPTURE_HELP));
 }
 
 static void OnResetPressed(MyGUI::Widget* sender)
@@ -221,7 +222,7 @@ static void OnResetPressed(MyGUI::Widget* sender)
 	SaveConfig();
 	UpdateLabels();
 	if (g_changeBtn != NULL)
-		g_changeBtn->setCaption("Change");
+		g_changeBtn->setCaption(Tr(TR_CHANGE));
 	DebugLog("[KenshiRotate] Binding reset to Middle Mouse");
 }
 
@@ -252,7 +253,7 @@ static void ApplyBinding(BindType type, OIS::KeyCode kc)
 	SaveConfig();
 	UpdateLabels();
 	if (g_changeBtn != NULL)
-		g_changeBtn->setCaption("Change");
+		g_changeBtn->setCaption(Tr(TR_CHANGE));
 
 	std::string name = GetKeyDisplayName(type, kc);
 	DebugLog("[KenshiRotate] Bound to " + name);
@@ -283,8 +284,12 @@ void RotateSettings::InjectModsTabUI()
 	if (tabCtrl == NULL || tabCtrl->getItemCount() == 0)
 		return;
 
-	// Find the MODS tab by caption (not by index, so other plugins
-	// adding tabs like KEP's "Plugins" tab don't affect us)
+	// Find the MODS tab using language-independent strategies.
+	// getItemNameAt() returns the localized caption, which differs by language.
+	// Strategy 1: match by caption "MODS" (English)
+	// Strategy 2: match by widget name suffix (layout XML name, never translated)
+	// Strategy 3: fall back to index 5 (vanilla always creates 6 tabs: General,
+	//             Gameplay, Graphics, Audio, Controls, Mods)
 	MyGUI::TabItem* tab = NULL;
 	for (size_t i = 0; i < tabCtrl->getItemCount(); ++i)
 	{
@@ -294,6 +299,25 @@ void RotateSettings::InjectModsTabUI()
 			break;
 		}
 	}
+	if (tab == NULL)
+	{
+		for (size_t i = 0; i < tabCtrl->getItemCount(); ++i)
+		{
+			std::string widgetName = tabCtrl->getItemAt(i)->getName();
+			size_t splitPos = widgetName.find('_');
+			if (splitPos != std::string::npos)
+			{
+				std::string suffix = widgetName.substr(splitPos + 1);
+				if (suffix == "Mods" || suffix == "ModTab")
+				{
+					tab = tabCtrl->getItemAt(i);
+					break;
+				}
+			}
+		}
+	}
+	if (tab == NULL && tabCtrl->getItemCount() >= 6)
+		tab = tabCtrl->getItemAt(5);
 	if (tab == NULL)
 		return;
 
@@ -332,7 +356,7 @@ void RotateSettings::InjectModsTabUI()
 		x, baseY + 0.09f, 0.12f, 0.04f,
 		MyGUI::Align::Top | MyGUI::Align::Left,
 		"KenshiRotateChange");
-	g_changeBtn->setCaption("Change");
+	g_changeBtn->setCaption(Tr(TR_CHANGE));
 	g_changeBtn->eventMouseButtonClick += MyGUI::newDelegate(OnChangePressed);
 
 	// Reset button
@@ -341,7 +365,7 @@ void RotateSettings::InjectModsTabUI()
 		x + 0.13f, baseY + 0.09f, 0.12f, 0.04f,
 		MyGUI::Align::Top | MyGUI::Align::Left,
 		"KenshiRotateReset");
-	resetBtn->setCaption("Reset");
+	resetBtn->setCaption(Tr(TR_RESET));
 	resetBtn->eventMouseButtonClick += MyGUI::newDelegate(OnResetPressed);
 
 	// Conflict warning
@@ -366,7 +390,7 @@ void RotateSettings::ProcessCapture()
 	{
 		g_captureMode = false;
 		if (g_changeBtn != NULL)
-			g_changeBtn->setCaption("Change");
+			g_changeBtn->setCaption(Tr(TR_CHANGE));
 		UpdateLabels();
 		return;
 	}

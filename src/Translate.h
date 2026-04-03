@@ -15,6 +15,8 @@ enum TrKey {
 	TR_ERR_SQUARE,         // "Cannot rotate: item is square"
 	TR_ERR_HOOKS_FAILED,   // "Cannot rotate: save/load hooks failed"
 	TR_ERR_NO_SPACE,       // "Cannot rotate: not enough space"
+	TR_NONE,               // "None"
+	TR_SECONDARY_KEY_PREFIX, // "Secondary key: "
 	TR_COUNT
 };
 

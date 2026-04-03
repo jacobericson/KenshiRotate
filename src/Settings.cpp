@@ -29,12 +29,17 @@
 
 static BindType g_bindType = BIND_MIDDLE_MOUSE;
 static OIS::KeyCode g_keyCode = OIS::KC_UNASSIGNED;
-static bool g_captureMode = false;
+static BindType g_bindType2 = BIND_NONE;
+static OIS::KeyCode g_keyCode2 = OIS::KC_UNASSIGNED;
+static int g_captureTarget = 0; // 0=none, 1=primary, 2=secondary
 
 // Widget pointers (valid only while Options -> Mods tab widgets exist)
 static MyGUI::TextBox* g_keyLabel = NULL;
 static MyGUI::TextBox* g_conflictLabel = NULL;
 static MyGUI::Button* g_changeBtn = NULL;
+static MyGUI::TextBox* g_keyLabel2 = NULL;
+static MyGUI::TextBox* g_conflictLabel2 = NULL;
+static MyGUI::Button* g_changeBtn2 = NULL;
 
 // =====================================================
 // Config file I/O
@@ -89,6 +94,18 @@ static void LoadConfig()
 			if (val >= 0 && val <= 0xED)
 				g_keyCode = (OIS::KeyCode)val;
 		}
+		else if (k == "bind_type_2")
+		{
+			int val = atoi(v.c_str());
+			if (val >= 0 && val <= 2)
+				g_bindType2 = (BindType)val;
+		}
+		else if (k == "ois_keycode_2")
+		{
+			int val = atoi(v.c_str());
+			if (val >= 0 && val <= 0xED)
+				g_keyCode2 = (OIS::KeyCode)val;
+		}
 	}
 }
 
@@ -105,7 +122,9 @@ static void SaveConfig()
 	std::stringstream ss;
 	ss << "# KenshiRotate configuration\n"
 	   << "bind_type=" << (int)g_bindType << "\n"
-	   << "ois_keycode=" << (int)g_keyCode << "\n";
+	   << "ois_keycode=" << (int)g_keyCode << "\n"
+	   << "bind_type_2=" << (int)g_bindType2 << "\n"
+	   << "ois_keycode_2=" << (int)g_keyCode2 << "\n";
 	file << ss.str();
 }
 
@@ -160,6 +179,8 @@ static bool IsBlacklisted(OIS::KeyCode kc)
 
 static std::string GetKeyDisplayName(BindType type, OIS::KeyCode kc)
 {
+	if (type == BIND_NONE)
+		return Tr(TR_NONE);
 	if (type == BIND_MIDDLE_MOUSE)
 		return Tr(TR_MIDDLE_MOUSE);
 
@@ -174,7 +195,7 @@ static std::string GetKeyDisplayName(BindType type, OIS::KeyCode kc)
 
 static std::string GetConflictText(BindType type, OIS::KeyCode kc)
 {
-	if (type == BIND_MIDDLE_MOUSE)
+	if (type == BIND_MIDDLE_MOUSE || type == BIND_NONE)
 		return "";
 
 	if (key == NULL)
@@ -199,6 +220,13 @@ static void UpdateLabels()
 	}
 	if (g_conflictLabel != NULL)
 		g_conflictLabel->setCaption(GetConflictText(g_bindType, g_keyCode));
+	if (g_keyLabel2 != NULL)
+	{
+		std::string name2 = GetKeyDisplayName(g_bindType2, g_keyCode2);
+		g_keyLabel2->setCaption(std::string(Tr(TR_SECONDARY_KEY_PREFIX)) + name2);
+	}
+	if (g_conflictLabel2 != NULL)
+		g_conflictLabel2->setCaption(GetConflictText(g_bindType2, g_keyCode2));
 }
 
 // =====================================================
@@ -207,23 +235,37 @@ static void UpdateLabels()
 
 static void OnChangePressed(MyGUI::Widget* sender)
 {
-	g_captureMode = true;
-	if (g_changeBtn != NULL)
-		g_changeBtn->setCaption(Tr(TR_PRESS_A_KEY));
-	if (g_conflictLabel != NULL)
-		g_conflictLabel->setCaption(Tr(TR_CAPTURE_HELP));
+	g_captureTarget = (sender == g_changeBtn2) ? 2 : 1;
+	MyGUI::Button* btn = (g_captureTarget == 2) ? g_changeBtn2 : g_changeBtn;
+	MyGUI::TextBox* lbl = (g_captureTarget == 2) ? g_conflictLabel2 : g_conflictLabel;
+	if (btn != NULL)
+		btn->setCaption(Tr(TR_PRESS_A_KEY));
+	if (lbl != NULL)
+		lbl->setCaption(Tr(TR_CAPTURE_HELP));
 }
 
 static void OnResetPressed(MyGUI::Widget* sender)
 {
-	g_bindType = BIND_MIDDLE_MOUSE;
-	g_keyCode = OIS::KC_UNASSIGNED;
-	g_captureMode = false;
+	bool secondary = (sender->getName() == "KenshiRotateReset2");
+	if (secondary)
+	{
+		g_bindType2 = BIND_NONE;
+		g_keyCode2 = OIS::KC_UNASSIGNED;
+		DebugLog("[KenshiRotate] Secondary binding reset to None");
+	}
+	else
+	{
+		g_bindType = BIND_MIDDLE_MOUSE;
+		g_keyCode = OIS::KC_UNASSIGNED;
+		DebugLog("[KenshiRotate] Binding reset to Middle Mouse");
+	}
+	g_captureTarget = 0;
 	SaveConfig();
 	UpdateLabels();
 	if (g_changeBtn != NULL)
 		g_changeBtn->setCaption(Tr(TR_CHANGE));
-	DebugLog("[KenshiRotate] Binding reset to Middle Mouse");
+	if (g_changeBtn2 != NULL)
+		g_changeBtn2->setCaption(Tr(TR_CHANGE));
 }
 
 // =====================================================
@@ -245,18 +287,29 @@ static OIS::KeyCode ScanForPressedKey()
 	return OIS::KC_UNASSIGNED;
 }
 
-static void ApplyBinding(BindType type, OIS::KeyCode kc)
+static void ApplyBinding(int target, BindType type, OIS::KeyCode kc)
 {
-	g_bindType = type;
-	g_keyCode = kc;
-	g_captureMode = false;
+	if (target == 2)
+	{
+		g_bindType2 = type;
+		g_keyCode2 = kc;
+	}
+	else
+	{
+		g_bindType = type;
+		g_keyCode = kc;
+	}
+	g_captureTarget = 0;
 	SaveConfig();
 	UpdateLabels();
 	if (g_changeBtn != NULL)
 		g_changeBtn->setCaption(Tr(TR_CHANGE));
+	if (g_changeBtn2 != NULL)
+		g_changeBtn2->setCaption(Tr(TR_CHANGE));
 
 	std::string name = GetKeyDisplayName(type, kc);
-	DebugLog("[KenshiRotate] Bound to " + name);
+	const char* which = (target == 2) ? "Secondary bound to " : "Bound to ";
+	DebugLog(std::string("[KenshiRotate] ") + which + name);
 }
 
 // =====================================================
@@ -268,6 +321,8 @@ void RotateSettings::Init()
 	LoadConfig();
 	std::string name = GetKeyDisplayName(g_bindType, g_keyCode);
 	DebugLog("[KenshiRotate] Rotation key: " + name);
+	std::string name2 = GetKeyDisplayName(g_bindType2, g_keyCode2);
+	DebugLog("[KenshiRotate] Secondary key: " + name2);
 }
 
 void RotateSettings::InjectModsTabUI()
@@ -329,6 +384,9 @@ void RotateSettings::InjectModsTabUI()
 	g_keyLabel = NULL;
 	g_conflictLabel = NULL;
 	g_changeBtn = NULL;
+	g_keyLabel2 = NULL;
+	g_conflictLabel2 = NULL;
+	g_changeBtn2 = NULL;
 
 	// Position below RE_Kenshi's button area (they use y ~0.02, h ~0.05)
 	float baseY = 0.09f;
@@ -375,22 +433,55 @@ void RotateSettings::InjectModsTabUI()
 		MyGUI::Align::Top | MyGUI::Align::Left,
 		"KenshiRotateConflict");
 
+	// Secondary key display
+	g_keyLabel2 = tab->createWidgetReal<MyGUI::TextBox>(
+		"Kenshi_TextboxStandardText",
+		x, baseY + 0.18f, w, 0.04f,
+		MyGUI::Align::Top | MyGUI::Align::Left,
+		"KenshiRotateKeyLabel2");
+
+	// Secondary change button
+	g_changeBtn2 = tab->createWidgetReal<MyGUI::Button>(
+		"Kenshi_Button1",
+		x, baseY + 0.225f, 0.12f, 0.04f,
+		MyGUI::Align::Top | MyGUI::Align::Left,
+		"KenshiRotateChange2");
+	g_changeBtn2->setCaption(Tr(TR_CHANGE));
+	g_changeBtn2->eventMouseButtonClick += MyGUI::newDelegate(OnChangePressed);
+
+	// Secondary reset button
+	MyGUI::Button* resetBtn2 = tab->createWidgetReal<MyGUI::Button>(
+		"Kenshi_Button1",
+		x + 0.13f, baseY + 0.225f, 0.12f, 0.04f,
+		MyGUI::Align::Top | MyGUI::Align::Left,
+		"KenshiRotateReset2");
+	resetBtn2->setCaption(Tr(TR_RESET));
+	resetBtn2->eventMouseButtonClick += MyGUI::newDelegate(OnResetPressed);
+
+	// Secondary conflict warning
+	g_conflictLabel2 = tab->createWidgetReal<MyGUI::TextBox>(
+		"Kenshi_TextboxStandardText",
+		x, baseY + 0.27f, w, 0.04f,
+		MyGUI::Align::Top | MyGUI::Align::Left,
+		"KenshiRotateConflict2");
+
 	UpdateLabels();
 	DebugLog("[KenshiRotate] Injected settings into options tab");
 }
 
 void RotateSettings::ProcessCapture()
 {
-	if (!g_captureMode)
+	if (g_captureTarget == 0)
 		return;
 
 	// Escape cancels capture
 	if (key != NULL && key->keyboard != NULL &&
 		key->keyboard->isKeyDown(OIS::KC_ESCAPE))
 	{
-		g_captureMode = false;
-		if (g_changeBtn != NULL)
-			g_changeBtn->setCaption(Tr(TR_CHANGE));
+		MyGUI::Button* btn = (g_captureTarget == 2) ? g_changeBtn2 : g_changeBtn;
+		g_captureTarget = 0;
+		if (btn != NULL)
+			btn->setCaption(Tr(TR_CHANGE));
 		UpdateLabels();
 		return;
 	}
@@ -398,7 +489,7 @@ void RotateSettings::ProcessCapture()
 	// Middle mouse button
 	if (GetAsyncKeyState(VK_MBUTTON) & 0x8000)
 	{
-		ApplyBinding(BIND_MIDDLE_MOUSE, OIS::KC_UNASSIGNED);
+		ApplyBinding(g_captureTarget, BIND_MIDDLE_MOUSE, OIS::KC_UNASSIGNED);
 		return;
 	}
 
@@ -406,7 +497,7 @@ void RotateSettings::ProcessCapture()
 	OIS::KeyCode pressed = ScanForPressedKey();
 	if (pressed != OIS::KC_UNASSIGNED)
 	{
-		ApplyBinding(BIND_KEYBOARD, pressed);
+		ApplyBinding(g_captureTarget, BIND_KEYBOARD, pressed);
 		return;
 	}
 }
@@ -421,7 +512,17 @@ OIS::KeyCode RotateSettings::GetKeyCode()
 	return g_keyCode;
 }
 
+BindType RotateSettings::GetBindType2()
+{
+	return g_bindType2;
+}
+
+OIS::KeyCode RotateSettings::GetKeyCode2()
+{
+	return g_keyCode2;
+}
+
 bool RotateSettings::IsCapturing()
 {
-	return g_captureMode;
+	return g_captureTarget != 0;
 }

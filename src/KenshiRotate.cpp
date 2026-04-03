@@ -494,13 +494,19 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	// Check configured rotation trigger (debounced — only on rising edge)
 	bool triggerDown = false;
 	if (RotateSettings::GetBindType() == BIND_MIDDLE_MOUSE)
-	{
 		triggerDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-	}
-	else
-	{
+	else if (RotateSettings::GetBindType() == BIND_KEYBOARD)
 		triggerDown = key != NULL && key->keyboard != NULL &&
 			key->keyboard->isKeyDown(RotateSettings::GetKeyCode());
+
+	// Secondary bind (BIND_NONE skipped naturally)
+	if (!triggerDown)
+	{
+		if (RotateSettings::GetBindType2() == BIND_MIDDLE_MOUSE)
+			triggerDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+		else if (RotateSettings::GetBindType2() == BIND_KEYBOARD)
+			triggerDown = key != NULL && key->keyboard != NULL &&
+				key->keyboard->isKeyDown(RotateSettings::GetKeyCode2());
 	}
 
 	if (triggerDown && !g_lastTriggerState)

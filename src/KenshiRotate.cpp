@@ -49,6 +49,37 @@ static std::set<std::string> g_rotatedItems;
 static bool g_hookSaveOK = false;
 static bool g_hookLoadOK = false;
 
+// Cursor-held item tracking. Set when an InventoryIcon is created with
+// parent==NULL (makeIconForItem creates cursor icons this way).
+// Cleared when placeItemFromMouse succeeds.
+static Item* g_cursorItem = NULL;
+static InventoryIcon* g_cursorIcon = NULL;
+static MyGUI::Widget* g_shadowWidget = NULL;
+
+// Find the MouseInventory shadow widget by enumerating MyGUI root widgets.
+// The shadow is the unique root widget with alpha == 0.5 (set in MouseInventory
+// constructor with skin "WhiteSkin" on layer "Info").
+static void FindShadowWidget()
+{
+	if (g_shadowWidget)
+		return;
+
+	MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+	if (!gui)
+		return;
+
+	MyGUI::EnumeratorWidgetPtr en = gui->getEnumerator();
+	while (en.next())
+	{
+		MyGUI::Widget* w = en.current();
+		if (w && w->getAlpha() == 0.5f && w->getParent() == NULL)
+		{
+			g_shadowWidget = w;
+			return;
+		}
+	}
+}
+
 static std::string getHandleKey(Item* item)
 {
 	return item->handle.toString();
@@ -287,6 +318,7 @@ public:
 	using InventoryGUI::getMouseItem;
 	using InventoryGUI::refreshAllSections;
 	using InventoryGUI::refreshSection;
+	using InventoryGUI::placeItemFromMouse;
 };
 
 static Item* CallGetMouseItem(InventoryGUI* gui)
@@ -363,6 +395,89 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 	}
 }
 
+// =====================================================
+// Hook: placeItemFromMouse — clear cursor tracking
+// =====================================================
+
+bool (*placeItemFromMouse_orig)(InventoryGUI*, const std::string,
+	const MyGUI::types::TPoint<int>&) = NULL;
+
+bool placeItemFromMouse_hook(InventoryGUI* thisptr, const std::string sectionName,
+	const MyGUI::types::TPoint<int>& mousePos)
+{
+	bool result = placeItemFromMouse_orig(thisptr, sectionName, mousePos);
+	if (result)
+	{
+		g_cursorItem = NULL;
+		g_cursorIcon = NULL;
+	}
+	return result;
+}
+
+// =====================================================
+// Rotate cursor-held item (no section remove/add needed)
+// =====================================================
+
+static void TryRotateCursorItem()
+{
+	Item* item = g_cursorItem;
+	InventoryIcon* icon = g_cursorIcon;
+
+	if (!item || !icon)
+		return;
+
+	// Validate icon still references our tracked item (catches stale state)
+	if (icon->item != item)
+	{
+		g_cursorItem = NULL;
+		g_cursorIcon = NULL;
+		return;
+	}
+
+	if (item->itemWidth == item->itemHeight)
+	{
+		ou->showPlayerAMessage(Tr(TR_ERR_SQUARE), false);
+		return;
+	}
+	if (!g_hookSaveOK || !g_hookLoadOK)
+	{
+		ou->showPlayerAMessage(Tr(TR_ERR_HOOKS_FAILED), false);
+		return;
+	}
+
+	SwapItemDimensions(item);
+
+	bool wasRotated = isRotated(item);
+	setRotated(item, !wasRotated);
+
+	// Resize icon widget
+	MyGUI::types::TSize<int> sz = icon->getSize();
+	int newW = sz.height;
+	int newH = sz.width;
+
+	MyGUI::Widget* w = icon->getWidget();
+	if (w) w->setSize(newW, newH);
+	if (icon->image) icon->image->setSize(newW, newH);
+	if (icon->quantityText) icon->quantityText->setSize(newW, newH);
+
+	// Update charge bar (update() does NOT run for cursor-held icons)
+	if (icon->chargesProgress && item->originalFullChargeAmount > 0)
+	{
+		MyGUI::types::TSize<int> cpSize = icon->chargesProgress->getSize();
+		int barW = (int)((newW - 2) * item->chargesLeft / item->originalFullChargeAmount);
+		icon->chargesProgress->setSize(barW, cpSize.height);
+	}
+
+	// Resize shadow/highlight widget to match new icon dimensions
+	if (g_shadowWidget)
+		g_shadowWidget->setSize(newW, newH);
+
+	if (!wasRotated)
+		ApplyRotatedTexture(icon);
+	else
+		RestoreOriginalTexture(icon);
+}
+
 void InventoryGUI_update_hook(InventoryGUI* thisptr)
 {
 	InventoryGUI_update_orig(thisptr);
@@ -390,17 +505,25 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 
 	if (triggerDown && !g_lastTriggerState)
 	{
-		// Search this GUI first, then fall back to child GUI
-		Item* mouseItem = CallGetMouseItem(thisptr);
-		InventoryGUI* sourceGUI = thisptr;
-		if (!mouseItem && thisptr->childInventory)
+		if (g_cursorItem != NULL && g_cursorIcon != NULL)
 		{
-			mouseItem = CallGetMouseItem(thisptr->childInventory);
-			sourceGUI = thisptr->childInventory;
+			// Priority: rotate cursor-held item
+			TryRotateCursorItem();
 		}
+		else
+		{
+			// Fallback: rotate grid-hover item
+			Item* mouseItem = CallGetMouseItem(thisptr);
+			InventoryGUI* sourceGUI = thisptr;
+			if (!mouseItem && thisptr->childInventory)
+			{
+				mouseItem = CallGetMouseItem(thisptr->childInventory);
+				sourceGUI = thisptr->childInventory;
+			}
 
-		if (mouseItem)
-			TryRotateItem(mouseItem, sourceGUI);
+			if (mouseItem)
+				TryRotateItem(mouseItem, sourceGUI);
+		}
 	}
 
 	g_lastTriggerState = triggerDown;
@@ -417,6 +540,14 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 	const MyGUI::types::TPoint<int>& position, MyGUI::Widget* parent)
 {
 	InventoryIcon* result = InventoryIcon_ctor_orig(thisptr, item, position, parent);
+
+	// Track cursor icons — makeIconForItem creates them with parent==NULL
+	if (parent == NULL && item != NULL)
+	{
+		g_cursorItem = item;
+		g_cursorIcon = thisptr;
+		FindShadowWidget();
+	}
 
 	if (item && isRotated(item))
 	{
@@ -638,6 +769,19 @@ __declspec(dllexport) void startPlugin()
 	else
 	{
 		DebugLog("[KenshiRotate] Hooked OptionsWindow::update OK");
+	}
+
+	// --- Hook 7: placeItemFromMouse for cursor state tracking ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryGUIAccess::placeItemFromMouse),
+		(void*)placeItemFromMouse_hook,
+		(void**)&placeItemFromMouse_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook placeItemFromMouse");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked placeItemFromMouse OK");
 	}
 
 	DebugLog("[KenshiRotate] Plugin started successfully");

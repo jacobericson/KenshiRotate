@@ -19,6 +19,7 @@
 #include <mygui/MyGUI_ImageBox.h>
 #include <mygui/MyGUI_Widget.h>
 #include <mygui/MyGUI_SkinItem.h>
+#include <mygui/MyGUI_InputManager.h>
 
 #include <ogre/OgreTextureManager.h>
 #include <ogre/OgreTexture.h>
@@ -56,6 +57,16 @@ static Item* g_cursorItem = NULL;
 static InventoryIcon* g_cursorIcon = NULL;
 static MyGUI::Widget* g_shadowWidget = NULL;
 
+// Cached absolute pixel position of the hovered rotated item's top-left corner.
+// Updated every frame while mouse is over a rotated grid item.
+// Used at pickup time to compute the correct unclamped grab offset.
+static MyGUI::IntPoint g_hoveredItemAbsPos;
+static bool g_hasHoveredItemPos = false;
+
+// MouseInventory singleton pointer, found at runtime by scanning .data section.
+// Used to directly read/write the grab offset at +128/+132.
+static void* g_mouseInventory = NULL;
+
 // Find the MouseInventory shadow widget by enumerating MyGUI root widgets.
 // The shadow is the unique root widget with alpha == 0.5 (set in MouseInventory
 // constructor with skin "WhiteSkin" on layer "Info").
@@ -78,6 +89,72 @@ static void FindShadowWidget()
 			return;
 		}
 	}
+}
+
+// Find the MouseInventory singleton by scanning the PE .data section.
+// The singleton pointer is a global qword in kenshi_x64.exe whose value,
+// when dereferenced at offset +184, equals our shadow widget pointer.
+static void FindMouseInventory()
+{
+	if (g_mouseInventory || !g_shadowWidget)
+		return;
+
+	HMODULE base = GetModuleHandle(NULL);
+	if (!base)
+		return;
+
+	IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+	IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((char*)base + dos->e_lfanew);
+	IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+
+	for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+	{
+		if (!(sec->Characteristics & IMAGE_SCN_MEM_WRITE))
+			continue;
+
+		char* start = (char*)base + sec->VirtualAddress;
+		size_t size = sec->Misc.VirtualSize;
+
+		for (size_t off = 0; off + sizeof(void*) <= size; off += sizeof(void*))
+		{
+			void* candidate = *(void**)(start + off);
+			if (!candidate)
+				continue;
+
+			__try
+			{
+				void* shadowField = *(void**)((char*)candidate + 184);
+				if (shadowField == (void*)g_shadowWidget)
+				{
+					g_mouseInventory = candidate;
+					DebugLog("[KenshiRotate] Found MouseInventory singleton");
+					return;
+				}
+			}
+			__except(EXCEPTION_EXECUTE_HANDLER)
+			{
+			}
+		}
+	}
+
+	ErrorLog("[KenshiRotate] Failed to find MouseInventory singleton");
+}
+
+static bool GetGrabOffset(int& outX, int& outY)
+{
+	if (!g_mouseInventory)
+		return false;
+	outX = *(int*)((char*)g_mouseInventory + 128);
+	outY = *(int*)((char*)g_mouseInventory + 132);
+	return true;
+}
+
+static void SetGrabOffset(int x, int y)
+{
+	if (!g_mouseInventory)
+		return;
+	*(int*)((char*)g_mouseInventory + 128) = x;
+	*(int*)((char*)g_mouseInventory + 132) = y;
 }
 
 static std::string getHandleKey(Item* item)
@@ -455,6 +532,31 @@ static void TryRotateCursorItem()
 	int newW = sz.height;
 	int newH = sz.width;
 
+	// Fix grab offset so the item rotates around the mouse cursor.
+	// The game stores grabOffset = itemTopLeft - mousePos at MouseInventory+128/+132.
+	// After rotation, the mouse's relative position within the item changes.
+	// We rewrite the stored offset so the game's per-frame positioning is correct.
+	int grabX, grabY;
+	if (GetGrabOffset(grabX, grabY))
+	{
+		int newGrabX, newGrabY;
+		if (!wasRotated)
+		{
+			// CW rotation: rel(relX,relY) -> (oldH-1-relY, relX)
+			// grab = -rel, so newGrabX = -(oldH-1+grabY), newGrabY = grabX
+			newGrabX = -sz.height + 1 - grabY;
+			newGrabY = grabX;
+		}
+		else
+		{
+			// CCW (un-rotate): rel(relX,relY) -> (relY, oldW-1-relX)
+			// newGrabX = grabY, newGrabY = -(oldW-1+grabX)
+			newGrabX = grabY;
+			newGrabY = -sz.width + 1 - grabX;
+		}
+		SetGrabOffset(newGrabX, newGrabY);
+	}
+
 	MyGUI::Widget* w = icon->getWidget();
 	if (w) w->setSize(newW, newH);
 	if (icon->image) icon->image->setSize(newW, newH);
@@ -487,6 +589,32 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	if (thisptr->ownerInventory != NULL)
 		return;
 
+	// Cache hovered rotated item position for pickup offset correction.
+	// Only runs when no item is held on cursor.
+	if (g_cursorItem == NULL)
+	{
+		g_hasHoveredItemPos = false;
+		Item* hoverItem = CallGetMouseItem(thisptr);
+		InventoryGUI* hoverGUI = thisptr;
+		if (!hoverItem && thisptr->childInventory)
+		{
+			hoverItem = CallGetMouseItem(thisptr->childInventory);
+			hoverGUI = thisptr->childInventory;
+		}
+		if (hoverItem && isRotated(hoverItem))
+		{
+			std::string secName = hoverItem->inventorySection;
+			auto mapIt = hoverGUI->inventorySections.find(secName);
+			if (mapIt != hoverGUI->inventorySections.end())
+			{
+				InventorySectionGUI* secGUI = mapIt->second;
+				g_hoveredItemAbsPos = secGUI->getItemAbsolutePosition(
+					hoverItem->inventoryPos.x, hoverItem->inventoryPos.y);
+				g_hasHoveredItemPos = true;
+			}
+		}
+	}
+
 	// Skip rotation during key capture (settings rebind in progress)
 	if (RotateSettings::IsCapturing())
 		return;
@@ -511,14 +639,15 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 
 	if (triggerDown && !g_lastTriggerState)
 	{
-		if (g_cursorItem != NULL && g_cursorIcon != NULL)
+		if (g_cursorItem != NULL)
 		{
-			// Priority: rotate cursor-held item
-			TryRotateCursorItem();
+			// Rotate cursor-held item. Grid rotation is blocked while holding.
+			if (g_cursorIcon != NULL)
+				TryRotateCursorItem();
 		}
 		else
 		{
-			// Fallback: rotate grid-hover item
+			// No item held — rotate grid-hover item
 			Item* mouseItem = CallGetMouseItem(thisptr);
 			InventoryGUI* sourceGUI = thisptr;
 			if (!mouseItem && thisptr->childInventory)
@@ -553,6 +682,41 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 		g_cursorItem = item;
 		g_cursorIcon = thisptr;
 		FindShadowWidget();
+		FindMouseInventory();
+
+		// Fix pickup offset for rotated items.
+		// setupCursorItem clamps the grab offset to template dimensions.
+		// Recompute the correct offset from the cached pre-pickup grid position.
+		if (isRotated(item) && g_hasHoveredItemPos && g_mouseInventory)
+		{
+			MyGUI::InputManager* inputMgr = MyGUI::InputManager::getInstancePtr();
+			if (inputMgr)
+			{
+				const MyGUI::IntPoint& mousePos = inputMgr->getMousePosition();
+				int correctGrabX = g_hoveredItemAbsPos.left - mousePos.left;
+				int correctGrabY = g_hoveredItemAbsPos.top - mousePos.top;
+
+				// Apply same half-cell clamping as setupCursorItem but with instance dims
+				int cellW = InventoryIcon::getItemPosition(1, 0).left;
+				int cellH = InventoryIcon::getItemPosition(0, 1).top;
+				int halfCellW = cellW / 2;
+				int halfCellH = cellH / 2;
+				int instancePixelW = item->itemWidth * cellW;
+				int instancePixelH = item->itemHeight * cellH;
+				int minX = -(instancePixelW - halfCellW);
+				int maxX = -halfCellW;
+				int minY = -(instancePixelH - halfCellH);
+				int maxY = -halfCellH;
+
+				if (correctGrabX < minX) correctGrabX = minX;
+				if (correctGrabX > maxX) correctGrabX = maxX;
+				if (correctGrabY < minY) correctGrabY = minY;
+				if (correctGrabY > maxY) correctGrabY = maxY;
+
+				SetGrabOffset(correctGrabX, correctGrabY);
+			}
+		}
+		g_hasHoveredItemPos = false;
 	}
 
 	if (item && isRotated(item))
@@ -597,6 +761,7 @@ bool getBestPositionSlot_hook(InventorySectionGUI* thisptr,
 		// Bypass the original — it clamps using GameData (template) dimensions.
 		// Use getPositionSlot for raw pixel-to-grid conversion (no item clamping),
 		// then apply correct clamping using the item's actual instance dimensions.
+		//
 		MyGUI::types::TPoint<int> rawSlot = thisptr->getPositionSlot(position, section, true);
 
 		int maxX = section->width - item->itemWidth;

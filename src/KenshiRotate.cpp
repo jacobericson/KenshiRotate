@@ -659,6 +659,11 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	if (thisptr->ownerInventory != NULL)
 		return;
 
+	// Eagerly discover MouseInventory singleton on first inventory frame
+	// so the .data scan doesn't cause a hitch on first item pickup.
+	FindShadowWidget();
+	FindMouseInventory();
+
 	// Cache hovered rotated item position for pickup offset correction.
 	// Only runs when no item is held on cursor.
 	if (g_cursorItem == NULL)
@@ -751,8 +756,6 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 	{
 		g_cursorItem = item;
 		g_cursorIcon = thisptr;
-		FindShadowWidget();
-		FindMouseInventory();
 
 		// Fix pickup offset for rotated items.
 		// setupCursorItem clamps the grab offset to template dimensions.

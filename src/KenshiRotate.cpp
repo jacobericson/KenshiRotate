@@ -125,11 +125,29 @@ static void FindMouseInventory()
 			if (!candidate)
 				continue;
 
+			// Pre-check: candidate+184 must be in committed memory
+			MEMORY_BASIC_INFORMATION mbi;
+			if (!VirtualQuery((LPCVOID)((char*)candidate + 184), &mbi, sizeof(mbi)))
+				continue;
+			if (!(mbi.State & MEM_COMMIT))
+				continue;
+
 			__try
 			{
 				void* shadowField = *(void**)((char*)candidate + 184);
 				if (shadowField == (void*)g_shadowWidget)
 				{
+					// Secondary validation: Item* at +48 should be NULL
+					// or point to committed memory
+					void* itemField = *(void**)((char*)candidate + 48);
+					if (itemField != NULL)
+					{
+						MEMORY_BASIC_INFORMATION mbi2;
+						if (!VirtualQuery((LPCVOID)itemField, &mbi2, sizeof(mbi2))
+							|| !(mbi2.State & MEM_COMMIT))
+							continue;
+					}
+
 					g_mouseInventory = candidate;
 					DebugLog("[KenshiRotate] Found MouseInventory singleton");
 					return;
@@ -508,6 +526,9 @@ bool (*canStackWith_orig)(InventoryItemBase*, InventoryItemBase*) = NULL;
 
 bool canStackWith_hook(InventoryItemBase* thisptr, InventoryItemBase* other)
 {
+	if (!thisptr || !other)
+		return false;
+
 	if (!canStackWith_orig(thisptr, other))
 		return false;
 
@@ -552,7 +573,7 @@ Item* takeCertainAmountFrom_hook(InventoryGUI* thisptr, Item* baseItem, int amou
 
 	Item* newItem = takeCertainAmountFrom_orig(thisptr, baseItem, amount);
 
-	if (newItem && sourceRotated)
+	if (newItem && newItem != baseItem && sourceRotated)
 	{
 		SwapItemDimensions(newItem);
 		setRotated(newItem, true);
@@ -1041,19 +1062,6 @@ __declspec(dllexport) void startPlugin()
 		DebugLog("[KenshiRotate] Hooked canStackWith OK");
 	}
 
-	// --- Hook 10: addQuantity — prevent cross-rotation quantity transfer ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryItemBase::addQuantity),
-		(void*)addQuantity_hook,
-		(void**)&addQuantity_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook addQuantity");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked addQuantity OK");
-	}
-
 	// --- Hook 9: takeCertainAmountFrom — propagate rotation on split ---
 	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
 		(void*)KenshiLib::GetRealAddress(&InventoryGUIAccess::takeCertainAmountFrom),
@@ -1065,6 +1073,19 @@ __declspec(dllexport) void startPlugin()
 	else
 	{
 		DebugLog("[KenshiRotate] Hooked takeCertainAmountFrom OK");
+	}
+
+	// --- Hook 10: addQuantity — prevent cross-rotation quantity transfer ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryItemBase::addQuantity),
+		(void*)addQuantity_hook,
+		(void**)&addQuantity_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook addQuantity");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked addQuantity OK");
 	}
 
 	DebugLog("[KenshiRotate] Plugin started successfully");

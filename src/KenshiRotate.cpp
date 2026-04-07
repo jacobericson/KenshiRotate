@@ -8,6 +8,8 @@
 #include <Debug.h>
 #include <core/Functions.h>
 
+#pragma warning(push)
+#pragma warning(disable: 4091) // '__declspec(dllimport)' ignored (BaseLayout.h)
 #include <kenshi/Globals.h>
 #include <kenshi/GameWorld.h>
 #include <kenshi/Item.h>
@@ -20,6 +22,8 @@
 #include <mygui/MyGUI_Widget.h>
 #include <mygui/MyGUI_SkinItem.h>
 #include <mygui/MyGUI_InputManager.h>
+
+#pragma warning(pop)
 
 #include <ogre/OgreTextureManager.h>
 #include <ogre/OgreTexture.h>
@@ -396,6 +400,7 @@ public:
 	using InventoryGUI::refreshAllSections;
 	using InventoryGUI::refreshSection;
 	using InventoryGUI::placeItemFromMouse;
+	using InventoryGUI::takeCertainAmountFrom;
 };
 
 static Item* CallGetMouseItem(InventoryGUI* gui)
@@ -482,13 +487,78 @@ bool (*placeItemFromMouse_orig)(InventoryGUI*, const std::string,
 bool placeItemFromMouse_hook(InventoryGUI* thisptr, const std::string sectionName,
 	const MyGUI::types::TPoint<int>& mousePos)
 {
+	Item* prevCursorItem = g_cursorItem;
 	bool result = placeItemFromMouse_orig(thisptr, sectionName, mousePos);
-	if (result)
+	if (result && g_cursorItem == prevCursorItem)
 	{
+		// Normal placement — cursor is now empty.
 		g_cursorItem = NULL;
 		g_cursorIcon = NULL;
 	}
+	// Swap: setupCursorItem fired _CONSTRUCTOR which already set
+	// g_cursorItem/g_cursorIcon to the swapped item — keep them.
 	return result;
+}
+
+// =====================================================
+// Hook: canStackWith — prevent cross-rotation stacking
+// =====================================================
+
+bool (*canStackWith_orig)(InventoryItemBase*, InventoryItemBase*) = NULL;
+
+bool canStackWith_hook(InventoryItemBase* thisptr, InventoryItemBase* other)
+{
+	if (!canStackWith_orig(thisptr, other))
+		return false;
+
+	bool thisRotated = isRotated((Item*)thisptr);
+	bool otherRotated = isRotated((Item*)other);
+	if (thisRotated != otherRotated)
+		return false;
+
+	return true;
+}
+
+// =====================================================
+// Hook: addQuantity — prevent cross-rotation quantity transfer
+// =====================================================
+// placeItemFromMouse calls addQuantity in its swap/fallback path even
+// when canStackWith returned false.  Block the transfer here so that
+// differently-rotated stacks are never merged.
+
+void (*addQuantity_orig)(InventoryItemBase*, int*, Item*, InventorySection*) = NULL;
+
+void addQuantity_hook(InventoryItemBase* thisptr, int* amount, Item* addedItem, InventorySection* section)
+{
+	if (addedItem)
+	{
+		bool thisRotated = isRotated((Item*)thisptr);
+		bool addedRotated = isRotated(addedItem);
+		if (thisRotated != addedRotated)
+			return;
+	}
+	addQuantity_orig(thisptr, amount, addedItem, section);
+}
+
+// =====================================================
+// Hook: takeCertainAmountFrom — propagate rotation on stack split
+// =====================================================
+
+Item* (*takeCertainAmountFrom_orig)(InventoryGUI*, Item*, int) = NULL;
+
+Item* takeCertainAmountFrom_hook(InventoryGUI* thisptr, Item* baseItem, int amount)
+{
+	bool sourceRotated = baseItem && isRotated(baseItem);
+
+	Item* newItem = takeCertainAmountFrom_orig(thisptr, baseItem, amount);
+
+	if (newItem && sourceRotated)
+	{
+		SwapItemDimensions(newItem);
+		setRotated(newItem, true);
+	}
+
+	return newItem;
 }
 
 // =====================================================
@@ -953,6 +1023,45 @@ __declspec(dllexport) void startPlugin()
 	else
 	{
 		DebugLog("[KenshiRotate] Hooked placeItemFromMouse OK");
+	}
+
+	// --- Hook 8: canStackWith — prevent cross-rotation stacking ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryItemBase::canStackWith),
+		(void*)canStackWith_hook,
+		(void**)&canStackWith_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook canStackWith");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked canStackWith OK");
+	}
+
+	// --- Hook 10: addQuantity — prevent cross-rotation quantity transfer ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryItemBase::addQuantity),
+		(void*)addQuantity_hook,
+		(void**)&addQuantity_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook addQuantity");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked addQuantity OK");
+	}
+
+	// --- Hook 9: takeCertainAmountFrom — propagate rotation on split ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryGUIAccess::takeCertainAmountFrom),
+		(void*)takeCertainAmountFrom_hook,
+		(void**)&takeCertainAmountFrom_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook takeCertainAmountFrom");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked takeCertainAmountFrom OK");
 	}
 
 	DebugLog("[KenshiRotate] Plugin started successfully");

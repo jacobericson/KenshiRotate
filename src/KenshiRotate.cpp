@@ -41,25 +41,15 @@
 
 #include "Settings.h"
 #include "Translate.h"
-
-// =====================================================
-// Rotation State (runtime tracking)
-// =====================================================
-// Tracks which items are rotated during the current session using handle keys.
-// Handles are stable within a session but NOT across save/load.
-// Persistence across save/load is handled by injecting a "rotated" flag
-// into the item's GameData save record (see serialise/load hooks below).
-
-static std::set<std::string> g_rotatedItems;
-static bool g_hookSaveOK = false;
-static bool g_hookLoadOK = false;
+#include "RotationState.h"
+#include "TextureRotation.h"
+#include "MouseInventoryAccess.h"
 
 // Cursor-held item tracking. Set when an InventoryIcon is created with
 // parent==NULL (makeIconForItem creates cursor icons this way).
 // Cleared when placeItemFromMouse succeeds.
 static Item* g_cursorItem = NULL;
 static InventoryIcon* g_cursorIcon = NULL;
-static MyGUI::Widget* g_shadowWidget = NULL;
 
 // Cached absolute pixel position of the hovered rotated item's top-left corner.
 // Updated every frame while mouse is over a rotated grid item.
@@ -67,341 +57,6 @@ static MyGUI::Widget* g_shadowWidget = NULL;
 static MyGUI::IntPoint g_hoveredItemAbsPos;
 static bool g_hasHoveredItemPos = false;
 
-// MouseInventory singleton pointer, found at runtime by scanning .data section.
-// Used to directly read/write the grab offset at +128/+132.
-static void* g_mouseInventory = NULL;
-
-// Find the MouseInventory shadow widget by enumerating MyGUI root widgets.
-// The shadow is the unique root widget with alpha == 0.5 (set in MouseInventory
-// constructor with skin "WhiteSkin" on layer "Info").
-static void FindShadowWidget()
-{
-	if (g_shadowWidget)
-		return;
-
-	MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-	if (!gui)
-		return;
-
-	MyGUI::EnumeratorWidgetPtr en = gui->getEnumerator();
-	while (en.next())
-	{
-		MyGUI::Widget* w = en.current();
-		if (w && w->getAlpha() == 0.5f && w->getParent() == NULL)
-		{
-			g_shadowWidget = w;
-			return;
-		}
-	}
-}
-
-// Find the MouseInventory singleton by scanning the PE .data section.
-// The singleton pointer is a global qword in kenshi_x64.exe whose value,
-// when dereferenced at offset +184, equals our shadow widget pointer.
-static void FindMouseInventory()
-{
-	if (g_mouseInventory || !g_shadowWidget)
-		return;
-
-	HMODULE base = GetModuleHandle(NULL);
-	if (!base)
-		return;
-
-	IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
-	IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((char*)base + dos->e_lfanew);
-	IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
-
-	for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
-	{
-		if (!(sec->Characteristics & IMAGE_SCN_MEM_WRITE))
-			continue;
-
-		char* start = (char*)base + sec->VirtualAddress;
-		size_t size = sec->Misc.VirtualSize;
-
-		for (size_t off = 0; off + sizeof(void*) <= size; off += sizeof(void*))
-		{
-			void* candidate = *(void**)(start + off);
-			if (!candidate)
-				continue;
-
-			// Pre-check: candidate+184 must be in committed memory
-			MEMORY_BASIC_INFORMATION mbi;
-			if (!VirtualQuery((LPCVOID)((char*)candidate + 184), &mbi, sizeof(mbi)))
-				continue;
-			if (!(mbi.State & MEM_COMMIT))
-				continue;
-
-			__try
-			{
-				void* shadowField = *(void**)((char*)candidate + 184);
-				if (shadowField == (void*)g_shadowWidget)
-				{
-					// Secondary validation: Item* at +48 should be NULL
-					// or point to committed memory
-					void* itemField = *(void**)((char*)candidate + 48);
-					if (itemField != NULL)
-					{
-						MEMORY_BASIC_INFORMATION mbi2;
-						if (!VirtualQuery((LPCVOID)itemField, &mbi2, sizeof(mbi2))
-							|| !(mbi2.State & MEM_COMMIT))
-							continue;
-					}
-
-					g_mouseInventory = candidate;
-					DebugLog("[KenshiRotate] Found MouseInventory singleton");
-					return;
-				}
-			}
-			__except(EXCEPTION_EXECUTE_HANDLER)
-			{
-			}
-		}
-	}
-
-	ErrorLog("[KenshiRotate] Failed to find MouseInventory singleton");
-}
-
-static bool GetGrabOffset(int& outX, int& outY)
-{
-	if (!g_mouseInventory)
-		return false;
-	outX = *(int*)((char*)g_mouseInventory + 128);
-	outY = *(int*)((char*)g_mouseInventory + 132);
-	return true;
-}
-
-static void SetGrabOffset(int x, int y)
-{
-	if (!g_mouseInventory)
-		return;
-	*(int*)((char*)g_mouseInventory + 128) = x;
-	*(int*)((char*)g_mouseInventory + 132) = y;
-}
-
-static std::string getHandleKey(Item* item)
-{
-	return item->handle.toString();
-}
-
-static bool isRotated(Item* item)
-{
-	if (g_rotatedItems.empty())
-		return false;
-	return g_rotatedItems.count(getHandleKey(item)) > 0;
-}
-
-static void setRotated(Item* item, bool rotated)
-{
-	std::string k = getHandleKey(item);
-	if (rotated)
-		g_rotatedItems.insert(k);
-	else
-		g_rotatedItems.erase(k);
-}
-
-static void SwapItemDimensions(Item* item)
-{
-	int tmp = item->itemWidth;
-	item->itemWidth = item->itemHeight;
-	item->itemHeight = tmp;
-}
-
-// =====================================================
-// Texture Rotation (Ogre)
-// =====================================================
-// Creates a 90° CW rotated copy of an icon texture.
-// Cached so each unique texture is only rotated once.
-//
-// D3D9 has rendering issues with NPOT textures created via createManual,
-// so all rotated textures are padded to power-of-2 dimensions. The actual
-// image occupies the top-left corner; UV coordinates crop to that region.
-
-struct RotatedTextureInfo
-{
-	std::string name;
-	float uMax; // actual width / POT width
-	float vMax; // actual height / POT height
-};
-
-static std::map<std::string, RotatedTextureInfo> g_rotatedTextureCache;
-
-static Ogre::uint32 nextPowerOf2(Ogre::uint32 v)
-{
-	v--;
-	v |= v >> 1;
-	v |= v >> 2;
-	v |= v >> 4;
-	v |= v >> 8;
-	v |= v >> 16;
-	v++;
-	return v;
-}
-
-static bool GetOrCreateRotatedTexture(const std::string& originalName,
-	RotatedTextureInfo& outInfo)
-{
-	if (originalName.empty())
-		return false;
-
-	// Check cache
-	std::map<std::string, RotatedTextureInfo>::iterator cacheIt =
-		g_rotatedTextureCache.find(originalName);
-	if (cacheIt != g_rotatedTextureCache.end())
-	{
-		outInfo = cacheIt->second;
-		return true;
-	}
-
-	std::string rotatedName = originalName + "__rot90";
-
-	// Get the original texture
-	Ogre::TexturePtr srcTex = Ogre::TextureManager::getSingleton().getByName(originalName);
-	if (srcTex.isNull())
-	{
-		ErrorLog("[KenshiRotate] Could not find texture: " + originalName);
-		return false;
-	}
-
-	// Convert texture to an Image for pixel access
-	Ogre::Image srcImage;
-	srcTex->convertToImage(srcImage);
-
-	Ogre::uint32 srcW = srcImage.getWidth();
-	Ogre::uint32 srcH = srcImage.getHeight();
-	Ogre::PixelFormat fmt = srcImage.getFormat();
-	size_t bpp = Ogre::PixelUtil::getNumElemBytes(fmt);
-
-	if (srcW == 0 || srcH == 0 || bpp == 0)
-	{
-		ErrorLog("[KenshiRotate] Invalid texture dimensions or format");
-		return false;
-	}
-
-	// Rotated image dimensions (swapped) and POT-padded texture dimensions
-	Ogre::uint32 dstW = srcH;
-	Ogre::uint32 dstH = srcW;
-	Ogre::uint32 potW = nextPowerOf2(dstW);
-	Ogre::uint32 potH = nextPowerOf2(dstH);
-
-	// Allocate POT buffer, zero-filled (transparent black padding)
-	size_t potBufSize = potW * potH * bpp;
-	Ogre::uchar* potData = new Ogre::uchar[potBufSize];
-	memset(potData, 0, potBufSize);
-
-	// Rotate 90° CW: src(x, y) -> dst(srcH - 1 - y, x)
-	// Write into top-left of POT buffer using potW as row stride
-	const Ogre::uchar* srcData = srcImage.getData();
-	size_t srcRowPitch = srcImage.getRowSpan();
-
-	for (Ogre::uint32 y = 0; y < srcH; y++)
-	{
-		for (Ogre::uint32 x = 0; x < srcW; x++)
-		{
-			Ogre::uint32 dstX = srcH - 1 - y;
-			Ogre::uint32 dstY = x;
-
-			const Ogre::uchar* srcPixel = srcData + y * srcRowPitch + x * bpp;
-			Ogre::uchar* dstPixel = potData + dstY * (potW * bpp) + dstX * bpp;
-			memcpy(dstPixel, srcPixel, bpp);
-		}
-	}
-
-	// Check if rotated texture already exists in Ogre (e.g. from a previous session)
-	if (Ogre::TextureManager::getSingleton().getByName(rotatedName).isNull())
-	{
-		// Create POT texture and upload pixels via lock/unlock.
-		// Avoid loadImage/blitFromMemory which deadlock from the UI thread.
-		try
-		{
-			Ogre::TexturePtr rotTex = Ogre::TextureManager::getSingleton().createManual(
-				rotatedName,
-				Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME,
-				Ogre::TEX_TYPE_2D,
-				potW, potH, 0, fmt,
-				Ogre::TU_STATIC_WRITE_ONLY);
-
-			Ogre::HardwarePixelBufferSharedPtr buf = rotTex->getBuffer();
-			void* dest = buf->lock(Ogre::HardwareBuffer::HBL_DISCARD);
-
-			// POT texture — row pitch should match potW, but use buf width to be safe
-			size_t gpuRowBytes = buf->getWidth() * bpp;
-			size_t srcRowBytes = potW * bpp;
-			size_t copyBytes = gpuRowBytes < srcRowBytes ? gpuRowBytes : srcRowBytes;
-			if (gpuRowBytes != srcRowBytes)
-				ErrorLog("[KenshiRotate] GPU row pitch mismatch");
-			for (Ogre::uint32 row = 0; row < potH; row++)
-			{
-				memcpy(
-					(Ogre::uchar*)dest + row * gpuRowBytes,
-					potData + row * srcRowBytes,
-					copyBytes);
-			}
-
-			buf->unlock();
-		}
-		catch (Ogre::Exception& e)
-		{
-			ErrorLog("[KenshiRotate] Failed to create rotated texture: "
-				+ std::string(e.what()));
-			delete[] potData;
-			return false;
-		}
-	}
-
-	delete[] potData;
-
-	outInfo.name = rotatedName;
-	outInfo.uMax = (float)dstW / (float)potW;
-	outInfo.vMax = (float)dstH / (float)potH;
-	g_rotatedTextureCache[originalName] = outInfo;
-
-	return true;
-}
-
-// Apply rotated texture to an InventoryIcon's image widget
-static void ApplyRotatedTexture(InventoryIcon* icon)
-{
-	if (!icon || !icon->image)
-		return;
-
-	std::string texName = ((MyGUI::SkinItem*)icon->image)->_getTextureName();
-	// Don't re-rotate an already-rotated texture
-	if (texName.find("__rot90") != std::string::npos)
-		return;
-
-	RotatedTextureInfo info;
-	if (GetOrCreateRotatedTexture(texName, info))
-	{
-		// Set texture at the SkinItem level, then crop UVs to the actual
-		// image area within the POT texture via the SubSkin.
-		((MyGUI::SkinItem*)icon->image)->_setTextureName(info.name);
-		MyGUI::ISubWidgetRect* main =
-			((MyGUI::SkinItem*)icon->image)->getSubWidgetMain();
-		if (main)
-			main->_setUVSet(MyGUI::FloatRect(0, 0, info.uMax, info.vMax));
-	}
-}
-
-// Restore original texture on an InventoryIcon
-static void RestoreOriginalTexture(InventoryIcon* icon)
-{
-	if (!icon || !icon->image)
-		return;
-
-	std::string texName = ((MyGUI::SkinItem*)icon->image)->_getTextureName();
-	size_t pos = texName.find("__rot90");
-	if (pos != std::string::npos)
-	{
-		std::string originalName = texName.substr(0, pos);
-		// Restore texture and reset UVs to full original texture
-		((MyGUI::SkinItem*)icon->image)->_setTextureName(originalName);
-		MyGUI::ISubWidgetRect* main =
-			((MyGUI::SkinItem*)icon->image)->getSubWidgetMain();
-		if (main)
-			main->_setUVSet(MyGUI::FloatRect(0, 0, 1, 1));
-	}
-}
 
 // =====================================================
 // Hook: InventoryGUI::_NV_update — middle-click rotation
@@ -438,7 +93,7 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 		ou->showPlayerAMessage(Tr(TR_ERR_SQUARE), false);
 		return;
 	}
-	if (!g_hookSaveOK || !g_hookLoadOK)
+	if (!RotationState::hookSaveOK || !RotationState::hookLoadOK)
 	{
 		ou->showPlayerAMessage(Tr(TR_ERR_HOOKS_FAILED), false);
 		return;
@@ -451,21 +106,20 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 	if (!section)
 		return;
 
+	bool wasRotated = RotationState::IsRotated(item);
+
 	section->removeItem(item);
-	SwapItemDimensions(item);
+	RotationState::ApplyRotationState(item, !wasRotated);
 
 	if (!section->_NV_addItem(item, 1))
 	{
 		// Doesn't fit rotated — revert and put back
-		SwapItemDimensions(item);
+		RotationState::ApplyRotationState(item, wasRotated);
 		ou->showPlayerAMessage(Tr(TR_ERR_NO_SPACE), false);
 		if (!section->_NV_addItem(item, 1))
 			ErrorLog("[KenshiRotate] CRITICAL: failed to revert item after rotation rejection");
 		return;
 	}
-
-	bool wasRotated = isRotated(item);
-	setRotated(item, !wasRotated);
 
 	auto mapIt = sourceGUI->inventorySections.find(sectionName);
 	if (mapIt == sourceGUI->inventorySections.end())
@@ -487,9 +141,9 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 			if (icon->image) icon->image->setSize(newW, newH);
 			if (icon->quantityText) icon->quantityText->setSize(newW, newH);
 			if (!wasRotated)
-				ApplyRotatedTexture(icon);
+				TextureRotation::ApplyRotatedTexture(icon);
 			else
-				RestoreOriginalTexture(icon);
+				TextureRotation::RestoreOriginalTexture(icon);
 			break;
 		}
 	}
@@ -532,8 +186,8 @@ bool canStackWith_hook(InventoryItemBase* thisptr, InventoryItemBase* other)
 	if (!canStackWith_orig(thisptr, other))
 		return false;
 
-	bool thisRotated = isRotated((Item*)thisptr);
-	bool otherRotated = isRotated((Item*)other);
+	bool thisRotated = RotationState::IsRotated((Item*)thisptr);
+	bool otherRotated = RotationState::IsRotated((Item*)other);
 	if (thisRotated != otherRotated)
 		return false;
 
@@ -553,8 +207,8 @@ void addQuantity_hook(InventoryItemBase* thisptr, int* amount, Item* addedItem, 
 {
 	if (addedItem)
 	{
-		bool thisRotated = isRotated((Item*)thisptr);
-		bool addedRotated = isRotated(addedItem);
+		bool thisRotated = RotationState::IsRotated((Item*)thisptr);
+		bool addedRotated = RotationState::IsRotated(addedItem);
 		if (thisRotated != addedRotated)
 			return;
 	}
@@ -569,14 +223,14 @@ Item* (*takeCertainAmountFrom_orig)(InventoryGUI*, Item*, int) = NULL;
 
 Item* takeCertainAmountFrom_hook(InventoryGUI* thisptr, Item* baseItem, int amount)
 {
-	bool sourceRotated = baseItem && isRotated(baseItem);
+	bool sourceRotated = baseItem && RotationState::IsRotated(baseItem);
 
 	Item* newItem = takeCertainAmountFrom_orig(thisptr, baseItem, amount);
 
 	if (newItem && newItem != baseItem && sourceRotated)
 	{
-		SwapItemDimensions(newItem);
-		setRotated(newItem, true);
+		RotationState::SwapItemDimensions(newItem);
+		RotationState::SetTracked(newItem, true);
 	}
 
 	return newItem;
@@ -607,16 +261,14 @@ static void TryRotateCursorItem()
 		ou->showPlayerAMessage(Tr(TR_ERR_SQUARE), false);
 		return;
 	}
-	if (!g_hookSaveOK || !g_hookLoadOK)
+	if (!RotationState::hookSaveOK || !RotationState::hookLoadOK)
 	{
 		ou->showPlayerAMessage(Tr(TR_ERR_HOOKS_FAILED), false);
 		return;
 	}
 
-	SwapItemDimensions(item);
-
-	bool wasRotated = isRotated(item);
-	setRotated(item, !wasRotated);
+	bool wasRotated = RotationState::IsRotated(item);
+	RotationState::ApplyRotationState(item, !wasRotated);
 
 	// Resize icon widget
 	MyGUI::types::TSize<int> sz = icon->getSize();
@@ -628,7 +280,7 @@ static void TryRotateCursorItem()
 	// After rotation, the mouse's relative position within the item changes.
 	// We rewrite the stored offset so the game's per-frame positioning is correct.
 	int grabX, grabY;
-	if (GetGrabOffset(grabX, grabY))
+	if (MouseInventoryAccess::GetGrabOffset(grabX, grabY))
 	{
 		int newGrabX, newGrabY;
 		if (!wasRotated)
@@ -645,7 +297,7 @@ static void TryRotateCursorItem()
 			newGrabX = grabY;
 			newGrabY = -sz.width + 1 - grabX;
 		}
-		SetGrabOffset(newGrabX, newGrabY);
+		MouseInventoryAccess::SetGrabOffset(newGrabX, newGrabY);
 	}
 
 	MyGUI::Widget* w = icon->getWidget();
@@ -662,13 +314,13 @@ static void TryRotateCursorItem()
 	}
 
 	// Resize shadow/highlight widget to match new icon dimensions
-	if (g_shadowWidget)
-		g_shadowWidget->setSize(newW, newH);
+	if (MouseInventoryAccess::GetShadowWidget())
+		MouseInventoryAccess::GetShadowWidget()->setSize(newW, newH);
 
 	if (!wasRotated)
-		ApplyRotatedTexture(icon);
+		TextureRotation::ApplyRotatedTexture(icon);
 	else
-		RestoreOriginalTexture(icon);
+		TextureRotation::RestoreOriginalTexture(icon);
 }
 
 void InventoryGUI_update_hook(InventoryGUI* thisptr)
@@ -682,8 +334,8 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 
 	// Eagerly discover MouseInventory singleton on first inventory frame
 	// so the .data scan doesn't cause a hitch on first item pickup.
-	FindShadowWidget();
-	FindMouseInventory();
+	MouseInventoryAccess::FindShadowWidget();
+	MouseInventoryAccess::FindMouseInventory();
 
 	// Cache hovered rotated item position for pickup offset correction.
 	// Only runs when no item is held on cursor.
@@ -697,7 +349,7 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 			hoverItem = CallGetMouseItem(thisptr->childInventory);
 			hoverGUI = thisptr->childInventory;
 		}
-		if (hoverItem && isRotated(hoverItem))
+		if (hoverItem && RotationState::IsRotated(hoverItem))
 		{
 			std::string secName = hoverItem->inventorySection;
 			auto mapIt = hoverGUI->inventorySections.find(secName);
@@ -781,7 +433,7 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 		// Fix pickup offset for rotated items.
 		// setupCursorItem clamps the grab offset to template dimensions.
 		// Recompute the correct offset from the cached pre-pickup grid position.
-		if (isRotated(item) && g_hasHoveredItemPos && g_mouseInventory)
+		if (RotationState::IsRotated(item) && g_hasHoveredItemPos && MouseInventoryAccess::IsReady())
 		{
 			MyGUI::InputManager* inputMgr = MyGUI::InputManager::getInstancePtr();
 			if (inputMgr)
@@ -807,13 +459,13 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 				if (correctGrabY < minY) correctGrabY = minY;
 				if (correctGrabY > maxY) correctGrabY = maxY;
 
-				SetGrabOffset(correctGrabX, correctGrabY);
+				MouseInventoryAccess::SetGrabOffset(correctGrabX, correctGrabY);
 			}
 		}
 		g_hasHoveredItemPos = false;
 	}
 
-	if (item && isRotated(item))
+	if (item && RotationState::IsRotated(item))
 	{
 		MyGUI::types::TSize<int> origSize = thisptr->getSize();
 
@@ -832,7 +484,7 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 		}
 
 		// Apply rotated texture
-		ApplyRotatedTexture(thisptr);
+		TextureRotation::ApplyRotatedTexture(thisptr);
 	}
 
 	return result;
@@ -850,7 +502,7 @@ bool getBestPositionSlot_hook(InventorySectionGUI* thisptr,
 	const MyGUI::types::TPoint<int>& position, InventorySection* section,
 	Item* item, MyGUI::types::TPoint<int>& slot)
 {
-	if (item && isRotated(item))
+	if (item && RotationState::IsRotated(item))
 	{
 		// Bypass the original — it clamps using GameData (template) dimensions.
 		// Use getPositionSlot for raw pixel-to-grid conversion (no item clamping),
@@ -888,7 +540,7 @@ GameData* Item_serialiseInv_hook(Item* thisptr, GameDataContainer* container, Ga
 	GameData* state = Item_serialiseInv_orig(thisptr, container, refList);
 
 	// Inject "rotated" flag into the item's save record
-	if (state && isRotated(thisptr))
+	if (state && RotationState::IsRotated(thisptr))
 		state->add("rotated", true, std::string(), false);
 
 	return state;
@@ -912,17 +564,17 @@ void Item_loadInv_hook(Item* thisptr, GameDataContainer* container, GameData* st
 	if (it != state->bdata.end() && it->second)
 	{
 		// Re-apply dimension swap (game resets dims to template on load)
-		SwapItemDimensions(thisptr);
+		RotationState::SwapItemDimensions(thisptr);
 
 		// Track in runtime set for this session
-		setRotated(thisptr, true);
+		RotationState::SetTracked(thisptr, true);
 	}
 	else
 	{
 		// Clean up stale handle from a previous session if present.
 		// Within a session handles are unique, so this only fires
 		// after a full reload when a handle is reassigned.
-		g_rotatedItems.erase(getHandleKey(thisptr));
+		RotationState::EraseKey(RotationState::GetHandleKey(thisptr));
 	}
 }
 
@@ -1002,7 +654,7 @@ __declspec(dllexport) void startPlugin()
 	}
 	else
 	{
-		g_hookSaveOK = true;
+		RotationState::hookSaveOK = true;
 		DebugLog("[KenshiRotate] Hooked Item::serialiseInInventory OK");
 	}
 
@@ -1016,11 +668,14 @@ __declspec(dllexport) void startPlugin()
 	}
 	else
 	{
-		g_hookLoadOK = true;
+		RotationState::hookLoadOK = true;
 		DebugLog("[KenshiRotate] Hooked Item::loadFromSerialiseInInventory OK");
 	}
 
-	if (!g_hookSaveOK || !g_hookLoadOK)
+	// Note: if only one persistence hook succeeded (e.g. load but not save),
+	// rotations would load from existing saves but never persist new ones —
+	// creating silent data loss. We block rotation entirely if either fails.
+	if (!RotationState::hookSaveOK || !RotationState::hookLoadOK)
 		ErrorLog("[KenshiRotate] WARNING: persistence hooks incomplete — rotation will be disabled");
 
 	// --- Hook 6: OptionsWindow::update for settings UI + key capture ---
@@ -1090,3 +745,94 @@ __declspec(dllexport) void startPlugin()
 
 	DebugLog("[KenshiRotate] Plugin started successfully");
 }
+
+// =====================================================
+// Public C API for cross-mod integration (e.g. StackSort)
+// =====================================================
+// Consumer loads via GetModuleHandle("KenshiRotate.dll") + GetProcAddress.
+// All exports use void* instead of Item* to avoid header dependencies.
+
+extern "C"
+{
+
+__declspec(dllexport) int KenshiRotate_ApiVersion()
+{
+	return 1;
+}
+
+__declspec(dllexport) int KenshiRotate_IsRotated(void* item)
+{
+	if (!item)
+		return 0;
+	return RotationState::IsRotated((Item*)item) ? 1 : 0;
+}
+
+__declspec(dllexport) int KenshiRotate_CanRotate(void* item)
+{
+	if (!item)
+		return 0;
+	Item* it = (Item*)item;
+	if (it->isEquipped)
+		return 0;
+	if (it->itemWidth == it->itemHeight)
+		return 0;
+	if (!RotationState::hookSaveOK || !RotationState::hookLoadOK)
+		return 0;
+	return 1;
+}
+
+__declspec(dllexport) int KenshiRotate_SetRotated(void* item, int rotated)
+{
+	if (!item)
+		return 0;
+	return RotationState::ApplyRotationState((Item*)item, rotated != 0) ? 1 : 0;
+}
+
+__declspec(dllexport) void KenshiRotate_RefreshVisuals(void* inventoryGUI)
+{
+	if (!inventoryGUI)
+		return;
+
+	InventoryGUI* gui = (InventoryGUI*)inventoryGUI;
+
+	// Cell dimensions in pixels — constant across all sections
+	int cellW = InventoryIcon::getItemPosition(1, 0).left;
+	int cellH = InventoryIcon::getItemPosition(0, 1).top;
+
+	for (auto mapIt = gui->inventorySections.begin();
+		mapIt != gui->inventorySections.end(); ++mapIt)
+	{
+		InventorySectionGUI* sectionGUI = mapIt->second;
+		if (!sectionGUI)
+			continue;
+
+		for (size_t i = 0; i < sectionGUI->itemsIcons.size(); ++i)
+		{
+			InventoryIcon* icon = sectionGUI->itemsIcons[i];
+			if (!icon || !icon->item)
+				continue;
+
+			// Compute expected size from item's runtime dims (already swapped
+			// for rotated items). Works whether the ctor hook already fired
+			// (refreshAllSections recreated icons) or not (reused widgets).
+			int expectedW = icon->item->itemWidth * cellW;
+			int expectedH = icon->item->itemHeight * cellH;
+			MyGUI::types::TSize<int> sz = icon->getSize();
+
+			if (sz.width != expectedW || sz.height != expectedH)
+			{
+				MyGUI::Widget* w = icon->getWidget();
+				if (w) w->setSize(expectedW, expectedH);
+				if (icon->image) icon->image->setSize(expectedW, expectedH);
+				if (icon->quantityText) icon->quantityText->setSize(expectedW, expectedH);
+			}
+
+			if (RotationState::IsRotated(icon->item))
+				TextureRotation::ApplyRotatedTexture(icon);
+			else
+				TextureRotation::RestoreOriginalTexture(icon);
+		}
+	}
+}
+
+} // extern "C"

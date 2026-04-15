@@ -1,0 +1,15 @@
+# lang/zh_TW.txt - Chinese Traditional translation for KenshiRotate
+MIDDLE_MOUSE=滑鼠中鍵
+CONFLICT_PREFIX=警告: 已綁定到 '
+CONFLICT_SUFFIX='
+ROTATE_KEY_PREFIX=旋轉按鍵: 
+PRESS_A_KEY=請按下按鍵...
+CAPTURE_HELP=滑鼠中鍵或鍵盤。Esc 取消。
+CHANGE=變更
+RESET=重設
+ERR_EQUIPPED=無法旋轉: 物品已裝備
+ERR_SQUARE=無法旋轉: 物品是正方形
+ERR_HOOKS_FAILED=無法旋轉: 儲存/載入掛鉤失敗
+ERR_NO_SPACE=無法旋轉: 空間不足
+NONE=無
+SECONDARY_KEY_PREFIX=副鍵: 

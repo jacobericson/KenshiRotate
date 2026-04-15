@@ -1,0 +1,15 @@
+# lang/fr.txt - French translation for KenshiRotate
+MIDDLE_MOUSE=Clic molette
+CONFLICT_PREFIX=Attention : assigné à '
+CONFLICT_SUFFIX='
+ROTATE_KEY_PREFIX=Touche de rotation : 
+PRESS_A_KEY=Appuyez sur une touche...
+CAPTURE_HELP=Clic molette ou clavier. Échap pour annuler.
+CHANGE=Modifier
+RESET=Réinitialiser
+ERR_EQUIPPED=Rotation impossible : objet équipé
+ERR_SQUARE=Rotation impossible : objet carré
+ERR_HOOKS_FAILED=Rotation impossible : échec des hooks de sauvegarde/chargement
+ERR_NO_SPACE=Rotation impossible : espace insuffisant
+NONE=Aucune
+SECONDARY_KEY_PREFIX=Touche secondaire : 

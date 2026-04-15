@@ -1,0 +1,15 @@
+# lang/ja.txt - Japanese translation for KenshiRotate
+MIDDLE_MOUSE=マウス中ボタン
+CONFLICT_PREFIX=警告: '
+CONFLICT_SUFFIX=' に割り当て済み
+ROTATE_KEY_PREFIX=回転キー: 
+PRESS_A_KEY=キーを押してください...
+CAPTURE_HELP=マウス中ボタンまたはキーボード。Escでキャンセル。
+CHANGE=変更
+RESET=リセット
+ERR_EQUIPPED=回転できません: 装備中です
+ERR_SQUARE=回転できません: 正方形です
+ERR_HOOKS_FAILED=回転できません: 保存/読込フック失敗
+ERR_NO_SPACE=回転できません: スペース不足
+NONE=なし
+SECONDARY_KEY_PREFIX=サブキー: 

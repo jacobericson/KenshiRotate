@@ -1,0 +1,15 @@
+# lang/pt.txt - Portuguese translation for KenshiRotate
+MIDDLE_MOUSE=Botão do meio do mouse
+CONFLICT_PREFIX=Aviso: atribuído a '
+CONFLICT_SUFFIX='
+ROTATE_KEY_PREFIX=Tecla de rotação: 
+PRESS_A_KEY=Pressione uma tecla...
+CAPTURE_HELP=Botão do meio do mouse ou teclado. Esc para cancelar.
+CHANGE=Alterar
+RESET=Redefinir
+ERR_EQUIPPED=Não é possível rotacionar: item equipado
+ERR_SQUARE=Não é possível rotacionar: item quadrado
+ERR_HOOKS_FAILED=Não é possível rotacionar: falha nos hooks de salvar/carregar
+ERR_NO_SPACE=Não é possível rotacionar: espaço insuficiente
+NONE=Nenhuma
+SECONDARY_KEY_PREFIX=Tecla secundária: 

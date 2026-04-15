@@ -1,0 +1,15 @@
+# lang/ko.txt - Korean translation for KenshiRotate
+MIDDLE_MOUSE=마우스 가운데 버튼
+CONFLICT_PREFIX=경고: '
+CONFLICT_SUFFIX='에 할당됨
+ROTATE_KEY_PREFIX=회전 키: 
+PRESS_A_KEY=키를 누르세요...
+CAPTURE_HELP=마우스 가운데 버튼 또는 키보드. Esc로 취소.
+CHANGE=변경
+RESET=초기화
+ERR_EQUIPPED=회전 불가: 아이템 장착 중
+ERR_SQUARE=회전 불가: 정사각형 아이템
+ERR_HOOKS_FAILED=회전 불가: 저장/불러오기 훅 실패
+ERR_NO_SPACE=회전 불가: 공간 부족
+NONE=없음
+SECONDARY_KEY_PREFIX=보조 키: 

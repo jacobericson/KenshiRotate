@@ -1,0 +1,15 @@
+# lang/ru.txt - Russian translation for KenshiRotate
+MIDDLE_MOUSE=Средняя кнопка мыши
+CONFLICT_PREFIX=Внимание: назначено на '
+CONFLICT_SUFFIX='
+ROTATE_KEY_PREFIX=Клавиша вращения: 
+PRESS_A_KEY=Нажмите клавишу...
+CAPTURE_HELP=Средняя кнопка мыши или клавиатура. Esc для отмены.
+CHANGE=Изменить
+RESET=Сброс
+ERR_EQUIPPED=Нельзя вращать: предмет экипирован
+ERR_SQUARE=Нельзя вращать: предмет квадратный
+ERR_HOOKS_FAILED=Нельзя вращать: ошибка хуков сохранения/загрузки
+ERR_NO_SPACE=Нельзя вращать: недостаточно места
+NONE=Нет
+SECONDARY_KEY_PREFIX=Доп. клавиша: 

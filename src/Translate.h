@@ -1,23 +1,27 @@
 #pragma once
 
+// X() args must be plain identifiers (MSVC preprocessor quirk with `##`).
+#define TR_KEYS(X)                                                            \
+    X(MIDDLE_MOUSE,         "Middle Mouse")                                   \
+    X(CONFLICT_PREFIX,      "Warning: bound to '")                            \
+    X(CONFLICT_SUFFIX,      "'")                                              \
+    X(ROTATE_KEY_PREFIX,    "Rotate key: ")                                   \
+    X(PRESS_A_KEY,          "Press a key...")                                 \
+    X(CAPTURE_HELP,         "Middle mouse or keyboard. Esc to cancel.")       \
+    X(CHANGE,               "Change")                                         \
+    X(RESET,                "Reset")                                          \
+    X(ERR_EQUIPPED,         "Cannot rotate: item is equipped")                \
+    X(ERR_SQUARE,           "Cannot rotate: item is square")                  \
+    X(ERR_HOOKS_FAILED,     "Cannot rotate: save/load hooks failed")          \
+    X(ERR_NO_SPACE,         "Cannot rotate: not enough space")                \
+    X(NONE,                 "None")                                           \
+    X(SECONDARY_KEY_PREFIX, "Secondary key: ")
+
 enum TrKey {
-	// Settings UI strings
-	TR_MIDDLE_MOUSE,       // "Middle Mouse"
-	TR_CONFLICT_PREFIX,    // "Warning: bound to '"
-	TR_CONFLICT_SUFFIX,    // "'"
-	TR_ROTATE_KEY_PREFIX,  // "Rotate key: "
-	TR_PRESS_A_KEY,        // "Press a key..."
-	TR_CAPTURE_HELP,       // "Middle mouse or keyboard. Esc to cancel."
-	TR_CHANGE,             // "Change"
-	TR_RESET,              // "Reset"
-	// In-game popup messages
-	TR_ERR_EQUIPPED,       // "Cannot rotate: item is equipped"
-	TR_ERR_SQUARE,         // "Cannot rotate: item is square"
-	TR_ERR_HOOKS_FAILED,   // "Cannot rotate: save/load hooks failed"
-	TR_ERR_NO_SPACE,       // "Cannot rotate: not enough space"
-	TR_NONE,               // "None"
-	TR_SECONDARY_KEY_PREFIX, // "Secondary key: "
-	TR_COUNT
+#define X(n, s) TR_##n,
+    TR_KEYS(X)
+#undef X
+    TR_COUNT
 };
 
 const char* Tr(TrKey key);

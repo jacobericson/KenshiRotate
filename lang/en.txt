@@ -1,0 +1,15 @@
+# lang/en.txt - English translation for KenshiRotate
+MIDDLE_MOUSE=Middle Mouse
+CONFLICT_PREFIX=Warning: bound to '
+CONFLICT_SUFFIX='
+ROTATE_KEY_PREFIX=Rotate key: 
+PRESS_A_KEY=Press a key...
+CAPTURE_HELP=Middle mouse or keyboard. Esc to cancel.
+CHANGE=Change
+RESET=Reset
+ERR_EQUIPPED=Cannot rotate: item is equipped
+ERR_SQUARE=Cannot rotate: item is square
+ERR_HOOKS_FAILED=Cannot rotate: save/load hooks failed
+ERR_NO_SPACE=Cannot rotate: not enough space
+NONE=None
+SECONDARY_KEY_PREFIX=Secondary key: 

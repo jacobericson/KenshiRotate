@@ -1,0 +1,15 @@
+# lang/de.txt - German translation for KenshiRotate
+MIDDLE_MOUSE=Mittlere Maustaste
+CONFLICT_PREFIX=Warnung: belegt mit '
+CONFLICT_SUFFIX='
+ROTATE_KEY_PREFIX=Drehtaste: 
+PRESS_A_KEY=Taste drücken...
+CAPTURE_HELP=Mittlere Maustaste oder Tastatur. Esc zum Abbrechen.
+CHANGE=Ändern
+RESET=Zurücksetzen
+ERR_EQUIPPED=Drehen nicht möglich: Gegenstand ist ausgerüstet
+ERR_SQUARE=Drehen nicht möglich: Gegenstand ist quadratisch
+ERR_HOOKS_FAILED=Drehen nicht möglich: Speicher-/Ladehooks fehlgeschlagen
+ERR_NO_SPACE=Drehen nicht möglich: nicht genug Platz
+NONE=Keine
+SECONDARY_KEY_PREFIX=Zweittaste: 

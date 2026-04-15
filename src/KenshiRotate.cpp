@@ -418,13 +418,22 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 				key->keyboard->isKeyDown(RotateSettings::GetKeyCode2());
 	}
 
+	// Rising-edge detection, but only consume the edge when rotation
+	// actually happens. _NV_update fires for every standalone InventoryGUI
+	// (character body + any open container like a weapon stand), so if the
+	// character's call consumed the edge when the mouse was over a container,
+	// the container's later call would never see the rising edge.
 	if (triggerDown && !g_lastTriggerState)
 	{
+		bool rotated = false;
 		if (g_cursorItem != NULL)
 		{
 			// Rotate cursor-held item. Grid rotation is blocked while holding.
 			if (g_cursorIcon != NULL)
+			{
 				TryRotateCursorItem();
+				rotated = true;
+			}
 		}
 		else
 		{
@@ -438,11 +447,19 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 			}
 
 			if (mouseItem)
+			{
 				TryRotateItem(mouseItem, sourceGUI);
+				rotated = true;
+			}
 		}
-	}
 
-	g_lastTriggerState = triggerDown;
+		if (rotated)
+			g_lastTriggerState = true;
+	}
+	else if (!triggerDown)
+	{
+		g_lastTriggerState = false;
+	}
 }
 
 // =====================================================

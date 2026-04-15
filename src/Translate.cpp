@@ -1,5 +1,3 @@
-// KenshiRotate Translation — Language detection and string lookup
-
 #include "Translate.h"
 
 #include <Debug.h>
@@ -9,10 +7,6 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-
-// =====================================================
-// X-macro expansions
-// =====================================================
 
 enum LangId {
 	LANG_EN, LANG_JA, LANG_ZH_CN, LANG_ZH_TW, LANG_KO,
@@ -36,12 +30,8 @@ static std::string g_loaded[TR_COUNT];
 static bool        g_loadedValid[TR_COUNT];
 static LangId      g_currentLang = LANG_EN;
 
-// =====================================================
-// File loading
-// =====================================================
-
-// Mirrors Settings.cpp::GetConfigFilePath — address-of-function locates the
-// hosting DLL regardless of its filename.
+// Address-of-function locates the hosting DLL regardless of its filename
+// (mirrors Settings.cpp::GetConfigFilePath).
 static std::string GetLangDir()
 {
 	char path[MAX_PATH];
@@ -151,10 +141,6 @@ static void LoadLanguageFile(LangId lang)
 	if (malformed) ss << ", " << malformed << " malformed";
 	DebugLog(ss.str());
 }
-
-// =====================================================
-// Public API
-// =====================================================
 
 const char* Tr(TrKey key)
 {

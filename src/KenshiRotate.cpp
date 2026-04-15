@@ -1,6 +1,3 @@
-// KenshiRotate - Inventory item rotation plugin for Kenshi
-// Allows rotating items in inventory by middle-clicking while hovering.
-
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #include <Windows.h>
@@ -17,24 +14,13 @@
 #include <kenshi/InputHandler.h>
 #include <kenshi/gui/InventoryGUI.h>
 
-#include <mygui/MyGUI_Gui.h>
-#include <mygui/MyGUI_ImageBox.h>
 #include <mygui/MyGUI_Widget.h>
-#include <mygui/MyGUI_SkinItem.h>
 #include <mygui/MyGUI_InputManager.h>
 
 #pragma warning(pop)
 
-#include <ogre/OgreTextureManager.h>
-#include <ogre/OgreTexture.h>
-#include <ogre/OgreImage.h>
-#include <ogre/OgrePixelFormat.h>
-#include <ogre/OgreHardwarePixelBuffer.h>
-
-#include <set>
-#include <map>
 #include <string>
-#include <sstream>
+#include <vector>
 
 #include <kenshi/GameData.h>
 #include <kenshi/gui/OptionsWindow.h>
@@ -46,10 +32,6 @@
 #include "MouseInventoryAccess.h"
 #include "CursorState.h"
 
-
-// =====================================================
-// Hook: InventoryGUI::_NV_update — middle-click rotation
-// =====================================================
 
 void (*InventoryGUI_update_orig)(InventoryGUI*) = NULL;
 
@@ -68,7 +50,7 @@ public:
 
 static Item* CallGetMouseItem(InventoryGUI* gui)
 {
-	return ((InventoryGUIAccess*)gui)->getMouseItem();
+	return static_cast<InventoryGUIAccess*>(gui)->getMouseItem();
 }
 
 static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
@@ -139,10 +121,6 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 	}
 }
 
-// =====================================================
-// Hook: placeItemFromMouse — clear cursor tracking
-// =====================================================
-
 bool (*placeItemFromMouse_orig)(InventoryGUI*, const std::string,
 	const MyGUI::types::TPoint<int>&) = NULL;
 
@@ -159,19 +137,17 @@ bool placeItemFromMouse_hook(InventoryGUI* thisptr, const std::string sectionNam
 	return result;
 }
 
-// =====================================================
-// Hook: sectionMouseButtonReleased — mark right-click quick-transfer window
-// =====================================================
-// Kenshi's right-click auto-trade path (RClickAutoTrade / RClickAutoTradeAll)
-// returns InventoryGUI::TradeResult, a class with a constructor — can't be
-// hooked directly under MSVC x64's hidden-return-pointer ABI.  Instead we
-// hook the mouse-release dispatcher one level up and set a flag while the
-// right-click is being handled.  canStackWith/addQuantity consult the flag
-// to bypass the rotation-equality check so that quick-transfer merges into
-// a destination stack of the opposite rotation.  Destination stack's
-// rotation state wins — we do not migrate rotation to the destination.
-
+// Kenshi's RClickAutoTrade returns TradeResult (hidden-return-ptr ABI, unhookable),
+// so we hook the mouse-release dispatcher and set this flag during right-click dispatch.
+// canStackWith/addQuantity consult it to let quick-transfer merge across rotation.
 static bool g_inQuickTransfer = false;
+
+static bool g_lastTriggerState = false;
+
+// Non-persistence hook failures — surfaced once on first inventory open.
+// Persistence failures have their own gates (RotationState::hookSaveOK/LoadOK).
+static std::vector<const char*> g_failedHookNames;
+static bool g_hookFailureWarned = false;
 
 void (*sectionMouseButtonReleased_orig)(InventoryGUI*, MyGUI::Widget*, int, int, MyGUI::MouseButton) = NULL;
 
@@ -184,10 +160,6 @@ void sectionMouseButtonReleased_hook(InventoryGUI* thisptr, MyGUI::Widget* sende
 	if (wasRight) g_inQuickTransfer = prev;
 }
 
-// =====================================================
-// Hook: canStackWith — prevent cross-rotation stacking
-// =====================================================
-
 bool (*canStackWith_orig)(InventoryItemBase*, InventoryItemBase*) = NULL;
 
 bool canStackWith_hook(InventoryItemBase* thisptr, InventoryItemBase* other)
@@ -198,45 +170,33 @@ bool canStackWith_hook(InventoryItemBase* thisptr, InventoryItemBase* other)
 	if (!canStackWith_orig(thisptr, other))
 		return false;
 
-	// Bypass rotation check during right-click quick-transfer — destination
-	// stack's rotation wins.
+	// Right-click quick-transfer: destination stack's rotation wins.
 	if (g_inQuickTransfer)
 		return true;
 
-	bool thisRotated = RotationState::IsRotated((Item*)thisptr);
-	bool otherRotated = RotationState::IsRotated((Item*)other);
+	bool thisRotated = RotationState::IsRotated(static_cast<Item*>(thisptr));
+	bool otherRotated = RotationState::IsRotated(static_cast<Item*>(other));
 	if (thisRotated != otherRotated)
 		return false;
 
 	return true;
 }
 
-// =====================================================
-// Hook: addQuantity — prevent cross-rotation quantity transfer
-// =====================================================
-// placeItemFromMouse calls addQuantity in its swap/fallback path even
-// when canStackWith returned false.  Block the transfer here so that
-// differently-rotated stacks are never merged.
-
+// Defense-in-depth behind canStackWith: placeItemFromMouse's swap/fallback
+// path calls addQuantity even when canStackWith returned false.
 void (*addQuantity_orig)(InventoryItemBase*, int*, Item*, InventorySection*) = NULL;
 
 void addQuantity_hook(InventoryItemBase* thisptr, int* amount, Item* addedItem, InventorySection* section)
 {
-	// Bypass rotation check during right-click quick-transfer — destination
-	// stack's rotation wins.
 	if (addedItem && !g_inQuickTransfer)
 	{
-		bool thisRotated = RotationState::IsRotated((Item*)thisptr);
+		bool thisRotated = RotationState::IsRotated(static_cast<Item*>(thisptr));
 		bool addedRotated = RotationState::IsRotated(addedItem);
 		if (thisRotated != addedRotated)
 			return;
 	}
 	addQuantity_orig(thisptr, amount, addedItem, section);
 }
-
-// =====================================================
-// Hook: takeCertainAmountFrom — propagate rotation on stack split
-// =====================================================
 
 Item* (*takeCertainAmountFrom_orig)(InventoryGUI*, Item*, int) = NULL;
 
@@ -254,10 +214,6 @@ Item* takeCertainAmountFrom_hook(InventoryGUI* thisptr, Item* baseItem, int amou
 
 	return newItem;
 }
-
-// =====================================================
-// Rotate cursor-held item (no section remove/add needed)
-// =====================================================
 
 static void TryRotateCursorItem()
 {
@@ -288,15 +244,12 @@ static void TryRotateCursorItem()
 	bool wasRotated = RotationState::IsRotated(item);
 	RotationState::ApplyRotationState(item, !wasRotated);
 
-	// Resize icon widget
 	MyGUI::types::TSize<int> sz = icon->getSize();
 	int newW = sz.height;
 	int newH = sz.width;
 
-	// Fix grab offset so the item rotates around the mouse cursor.
-	// The game stores grabOffset = itemTopLeft - mousePos at MouseInventory+128/+132.
-	// After rotation, the mouse's relative position within the item changes.
-	// We rewrite the stored offset so the game's per-frame positioning is correct.
+	// Rewrite the stored grab offset so the item rotates around the mouse cursor
+	// (game stores itemTopLeft - mousePos; rotation changes the mouse's relative position).
 	int grabX, grabY;
 	if (MouseInventoryAccess::GetGrabOffset(grabX, grabY))
 	{
@@ -323,7 +276,7 @@ static void TryRotateCursorItem()
 	if (icon->image) icon->image->setSize(newW, newH);
 	if (icon->quantityText) icon->quantityText->setSize(newW, newH);
 
-	// Update charge bar (update() does NOT run for cursor-held icons)
+	// Charge bar: update() does NOT run for cursor-held icons, so size it manually.
 	if (icon->chargesProgress && item->originalFullChargeAmount > 0)
 	{
 		MyGUI::types::TSize<int> cpSize = icon->chargesProgress->getSize();
@@ -331,7 +284,6 @@ static void TryRotateCursorItem()
 		icon->chargesProgress->setSize(barW, cpSize.height);
 	}
 
-	// Resize shadow/highlight widget to match new icon dimensions
 	if (MouseInventoryAccess::GetShadowWidget())
 		MouseInventoryAccess::GetShadowWidget()->setSize(newW, newH);
 
@@ -350,8 +302,13 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	if (thisptr->ownerInventory != NULL)
 		return;
 
-	// Eagerly discover MouseInventory singleton on first inventory frame
-	// so the .data scan doesn't cause a hitch on first item pickup.
+	if (!g_hookFailureWarned && !g_failedHookNames.empty())
+	{
+		ou->showPlayerAMessage(Tr(TR_WARN_HOOKS_FAILED), false);
+		g_hookFailureWarned = true;
+	}
+
+	// Lazy one-time discovery; both are cheap after the first successful find.
 	MouseInventoryAccess::FindShadowWidget();
 	MouseInventoryAccess::FindMouseInventory();
 
@@ -384,7 +341,6 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	if (RotateSettings::IsCapturing())
 		return;
 
-	// Check configured rotation trigger (debounced — only on rising edge)
 	bool triggerDown = false;
 	if (RotateSettings::GetBindType() == BIND_MIDDLE_MOUSE)
 		triggerDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
@@ -392,7 +348,7 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 		triggerDown = key != NULL && key->keyboard != NULL &&
 			key->keyboard->isKeyDown(RotateSettings::GetKeyCode());
 
-	// Secondary bind (BIND_NONE skipped naturally)
+	// BIND_NONE skipped naturally — no branch matches.
 	if (!triggerDown)
 	{
 		if (RotateSettings::GetBindType2() == BIND_MIDDLE_MOUSE)
@@ -407,13 +363,12 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	// (character body + any open container like a weapon stand), so if the
 	// character's call consumed the edge when the mouse was over a container,
 	// the container's later call would never see the rising edge.
-	static bool lastTriggerState = false;
-	if (triggerDown && !lastTriggerState)
+	if (triggerDown && !g_lastTriggerState)
 	{
 		bool rotated = false;
 		if (CursorState::IsHolding())
 		{
-			// Rotate cursor-held item. Grid rotation is blocked while holding.
+			// Holding an item blocks grid rotation.
 			if (CursorState::GetIcon() != NULL)
 			{
 				TryRotateCursorItem();
@@ -422,7 +377,6 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 		}
 		else
 		{
-			// No item held — rotate grid-hover item
 			Item* mouseItem = CallGetMouseItem(thisptr);
 			InventoryGUI* sourceGUI = thisptr;
 			if (!mouseItem && thisptr->childInventory)
@@ -439,17 +393,13 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 		}
 
 		if (rotated)
-			lastTriggerState = true;
+			g_lastTriggerState = true;
 	}
 	else if (!triggerDown)
 	{
-		lastTriggerState = false;
+		g_lastTriggerState = false;
 	}
 }
-
-// =====================================================
-// Hook: InventoryIcon constructor — fix icon size
-// =====================================================
 
 InventoryIcon* (*InventoryIcon_ctor_orig)(InventoryIcon*, Item*,
 	const MyGUI::types::TPoint<int>&, MyGUI::Widget*) = NULL;
@@ -518,16 +468,11 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 			thisptr->chargesProgress->setSize(barW, cpSize.height);
 		}
 
-		// Apply rotated texture
 		TextureRotation::ApplyRotatedTexture(thisptr);
 	}
 
 	return result;
 }
-
-// =====================================================
-// Hook: getBestPositionSlot — fix highlight bounds
-// =====================================================
 
 bool (*getBestPositionSlot_orig)(InventorySectionGUI*,
 	const MyGUI::types::TPoint<int>&, InventorySection*, Item*,
@@ -539,10 +484,9 @@ bool getBestPositionSlot_hook(InventorySectionGUI* thisptr,
 {
 	if (item && RotationState::IsRotated(item))
 	{
-		// Bypass the original — it clamps using GameData (template) dimensions.
-		// Use getPositionSlot for raw pixel-to-grid conversion (no item clamping),
-		// then apply correct clamping using the item's actual instance dimensions.
-		//
+		// Original clamps using GameData (template) dimensions; for rotated items
+		// we need instance dimensions. getPositionSlot does raw pixel-to-grid
+		// conversion without item clamping, then we clamp against the instance.
 		MyGUI::types::TPoint<int> rawSlot = thisptr->getPositionSlot(position, section, true);
 
 		int maxX = section->width - item->itemWidth;
@@ -557,16 +501,11 @@ bool getBestPositionSlot_hook(InventorySectionGUI* thisptr,
 		if (slot.left < 0) slot.left = 0;
 		if (slot.top < 0) slot.top = 0;
 
-		// Validate placement at the clamped position
 		return section->canItemGoHere(item, slot.left, slot.top);
 	}
 
 	return getBestPositionSlot_orig(thisptr, position, section, item, slot);
 }
-
-// =====================================================
-// Hook: Item::serialiseInInventory — save rotation flag
-// =====================================================
 
 GameData* (*Item_serialiseInv_orig)(Item*, GameDataContainer*, GameData*) = NULL;
 
@@ -574,16 +513,11 @@ GameData* Item_serialiseInv_hook(Item* thisptr, GameDataContainer* container, Ga
 {
 	GameData* state = Item_serialiseInv_orig(thisptr, container, refList);
 
-	// Inject "rotated" flag into the item's save record
 	if (state && RotationState::IsRotated(thisptr))
 		state->add("rotated", true, std::string(), false);
 
 	return state;
 }
-
-// =====================================================
-// Hook: Item::loadFromSerialiseInInventory — restore rotation
-// =====================================================
 
 void (*Item_loadInv_orig)(Item*, GameDataContainer*, GameData*) = NULL;
 
@@ -594,32 +528,23 @@ void Item_loadInv_hook(Item* thisptr, GameDataContainer* container, GameData* st
 	if (!state)
 		return;
 
-	// Check if this item was saved with our custom "rotated" flag
 	auto it = state->bdata.find("rotated");
 	if (it != state->bdata.end() && it->second)
 	{
-		// Re-apply dimension swap (game resets dims to template on load)
+		// Game resets dims to template on load.
 		RotationState::SwapItemDimensions(thisptr);
-
-		// Track in runtime set for this session
 		RotationState::SetTracked(thisptr, true);
 	}
 	else
 	{
-		// Clean up stale handle from a previous session if present.
-		// Within a session handles are unique, so this only fires
-		// after a full reload when a handle is reassigned.
+		// Stale handle from a previous session (handles are unique within a
+		// session, so this only fires after a full reload when reassigned).
 		RotationState::EraseKey(RotationState::GetHandleKey(thisptr));
 	}
 }
 
-// =====================================================
-// Hook: OptionsWindow::update — settings injection + key capture
-// =====================================================
-// Widgets in the Options tab get destroyed when the menu closes.
-// Like RE_Kenshi, we re-inject every frame (InjectModsTabUI is
-// idempotent — it checks for existing widgets before creating).
-
+// Options tab widgets are destroyed when the menu closes, so re-inject every
+// frame. InjectModsTabUI is idempotent.
 void (*OptionsWindow_update_orig)(OptionsWindow*) = NULL;
 
 void OptionsWindow_update_hook(OptionsWindow* thisptr)
@@ -629,10 +554,6 @@ void OptionsWindow_update_hook(OptionsWindow* thisptr)
 	RotateSettings::ProcessCapture();
 }
 
-// =====================================================
-// Plugin Entry Point
-// =====================================================
-
 __declspec(dllexport) void startPlugin()
 {
 	DebugLog("[KenshiRotate] Starting plugin...");
@@ -640,71 +561,55 @@ __declspec(dllexport) void startPlugin()
 	DetectLanguage();
 	RotateSettings::Init();
 
-	// --- Hook 1: InventoryGUI::_NV_update for rotation trigger ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryGUI::_NV_update),
-		(void*)InventoryGUI_update_hook,
-		(void**)&InventoryGUI_update_orig))
+	// okFlag is non-NULL only for the two persistence hooks.
+	struct HookEntry
 	{
-		ErrorLog("[KenshiRotate] Failed to hook InventoryGUI::_NV_update");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked InventoryGUI::_NV_update OK");
-	}
+		const char* name;
+		void* realAddr;
+		void* detour;
+		void** origStore;
+		bool* okFlag;
+	};
 
-	// --- Hook 2: InventoryIcon::_CONSTRUCTOR for icon resizing ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryIcon::_CONSTRUCTOR),
-		(void*)InventoryIcon_ctor_hook,
-		(void**)&InventoryIcon_ctor_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook InventoryIcon::_CONSTRUCTOR");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked InventoryIcon::_CONSTRUCTOR OK");
-	}
+	#define HOOK_ENTRY(label, targetFn, hookFn, origPtr, okFlagPtr) \
+		{ label, \
+		  reinterpret_cast<void*>(KenshiLib::GetRealAddress(&targetFn)), \
+		  reinterpret_cast<void*>(hookFn), \
+		  reinterpret_cast<void**>(&origPtr), \
+		  okFlagPtr }
 
-	// --- Hook 3: getBestPositionSlot fix ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventorySectionGUI::getBestPositionSlot),
-		(void*)getBestPositionSlot_hook,
-		(void**)&getBestPositionSlot_orig))
+	HookEntry hooks[] =
 	{
-		ErrorLog("[KenshiRotate] Failed to hook getBestPositionSlot");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked getBestPositionSlot OK");
-	}
+		HOOK_ENTRY("InventoryGUI::_NV_update",                InventoryGUI::_NV_update,                       InventoryGUI_update_hook,          InventoryGUI_update_orig,          NULL),
+		HOOK_ENTRY("InventoryIcon::_CONSTRUCTOR",             InventoryIcon::_CONSTRUCTOR,                    InventoryIcon_ctor_hook,           InventoryIcon_ctor_orig,           NULL),
+		HOOK_ENTRY("InventorySectionGUI::getBestPositionSlot", InventorySectionGUI::getBestPositionSlot,      getBestPositionSlot_hook,          getBestPositionSlot_orig,          NULL),
+		HOOK_ENTRY("Item::serialiseInInventory",              Item::_NV_serialiseInInventory,                 Item_serialiseInv_hook,            Item_serialiseInv_orig,            &RotationState::hookSaveOK),
+		HOOK_ENTRY("Item::loadFromSerialiseInInventory",      Item::_NV_loadFromSerialiseInInventory,         Item_loadInv_hook,                 Item_loadInv_orig,                 &RotationState::hookLoadOK),
+		HOOK_ENTRY("OptionsWindow::_NV_update",               OptionsWindow::_NV_update,                      OptionsWindow_update_hook,         OptionsWindow_update_orig,         NULL),
+		HOOK_ENTRY("InventoryGUI::placeItemFromMouse",        InventoryGUIAccess::placeItemFromMouse,         placeItemFromMouse_hook,           placeItemFromMouse_orig,           NULL),
+		HOOK_ENTRY("InventoryItemBase::canStackWith",         InventoryItemBase::canStackWith,                canStackWith_hook,                 canStackWith_orig,                 NULL),
+		HOOK_ENTRY("InventoryGUI::takeCertainAmountFrom",     InventoryGUIAccess::takeCertainAmountFrom,      takeCertainAmountFrom_hook,        takeCertainAmountFrom_orig,        NULL),
+		HOOK_ENTRY("InventoryItemBase::addQuantity",          InventoryItemBase::addQuantity,                 addQuantity_hook,                  addQuantity_orig,                  NULL),
+		HOOK_ENTRY("InventoryGUI::sectionMouseButtonReleased", InventoryGUIAccess::sectionMouseButtonReleased, sectionMouseButtonReleased_hook,  sectionMouseButtonReleased_orig,   NULL)
+	};
 
-	// --- Hook 4: Item::serialiseInInventory for saving rotation flag ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&Item::_NV_serialiseInInventory),
-		(void*)Item_serialiseInv_hook,
-		(void**)&Item_serialiseInv_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook Item::serialiseInInventory");
-	}
-	else
-	{
-		RotationState::hookSaveOK = true;
-		DebugLog("[KenshiRotate] Hooked Item::serialiseInInventory OK");
-	}
+	#undef HOOK_ENTRY
 
-	// --- Hook 5: Item::loadFromSerialiseInInventory for restoring rotation ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&Item::_NV_loadFromSerialiseInInventory),
-		(void*)Item_loadInv_hook,
-		(void**)&Item_loadInv_orig))
+	const size_t hookCount = sizeof(hooks) / sizeof(hooks[0]);
+	for (size_t i = 0; i < hookCount; ++i)
 	{
-		ErrorLog("[KenshiRotate] Failed to hook Item::loadFromSerialiseInInventory");
-	}
-	else
-	{
-		RotationState::hookLoadOK = true;
-		DebugLog("[KenshiRotate] Hooked Item::loadFromSerialiseInInventory OK");
+		const HookEntry& h = hooks[i];
+		if (KenshiLib::SUCCESS != KenshiLib::AddHook(h.realAddr, h.detour, h.origStore))
+		{
+			ErrorLog((std::string("[KenshiRotate] Failed to hook ") + h.name).c_str());
+			g_failedHookNames.push_back(h.name);
+		}
+		else
+		{
+			DebugLog((std::string("[KenshiRotate] Hooked ") + h.name + " OK").c_str());
+			if (h.okFlag)
+				*h.okFlag = true;
+		}
 	}
 
 	// TryRotateItem / TryRotateCursorItem / KenshiRotate_CanRotate each refuse
@@ -712,93 +617,11 @@ __declspec(dllexport) void startPlugin()
 	if (!RotationState::hookSaveOK || !RotationState::hookLoadOK)
 		ErrorLog("[KenshiRotate] WARNING: persistence hooks incomplete — rotation will be disabled");
 
-	// --- Hook 6: OptionsWindow::update for settings UI + key capture ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&OptionsWindow::_NV_update),
-		(void*)OptionsWindow_update_hook,
-		(void**)&OptionsWindow_update_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook OptionsWindow::update");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked OptionsWindow::update OK");
-	}
-
-	// --- Hook 7: placeItemFromMouse for cursor state tracking ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryGUIAccess::placeItemFromMouse),
-		(void*)placeItemFromMouse_hook,
-		(void**)&placeItemFromMouse_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook placeItemFromMouse");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked placeItemFromMouse OK");
-	}
-
-	// --- Hook 8: canStackWith — prevent cross-rotation stacking ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryItemBase::canStackWith),
-		(void*)canStackWith_hook,
-		(void**)&canStackWith_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook canStackWith");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked canStackWith OK");
-	}
-
-	// --- Hook 9: takeCertainAmountFrom — propagate rotation on split ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryGUIAccess::takeCertainAmountFrom),
-		(void*)takeCertainAmountFrom_hook,
-		(void**)&takeCertainAmountFrom_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook takeCertainAmountFrom");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked takeCertainAmountFrom OK");
-	}
-
-	// --- Hook 10: addQuantity — prevent cross-rotation quantity transfer ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryItemBase::addQuantity),
-		(void*)addQuantity_hook,
-		(void**)&addQuantity_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook addQuantity");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked addQuantity OK");
-	}
-
-	// --- Hook 11: sectionMouseButtonReleased — mark quick-transfer window ---
-	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
-		(void*)KenshiLib::GetRealAddress(&InventoryGUIAccess::sectionMouseButtonReleased),
-		(void*)sectionMouseButtonReleased_hook,
-		(void**)&sectionMouseButtonReleased_orig))
-	{
-		ErrorLog("[KenshiRotate] Failed to hook sectionMouseButtonReleased");
-	}
-	else
-	{
-		DebugLog("[KenshiRotate] Hooked sectionMouseButtonReleased OK");
-	}
-
 	DebugLog("[KenshiRotate] Plugin started successfully");
 }
 
-// =====================================================
-// Public C API for cross-mod integration (e.g. StackSort)
-// =====================================================
-// Consumer loads via GetModuleHandle("KenshiRotate.dll") + GetProcAddress.
-// All exports use void* instead of Item* to avoid header dependencies.
-
+// Public C API for cross-mod integration (e.g. StackSort). Consumers load via
+// GetModuleHandle + GetProcAddress; void* avoids header dependencies.
 extern "C"
 {
 
@@ -811,14 +634,14 @@ __declspec(dllexport) int KenshiRotate_IsRotated(void* item)
 {
 	if (!item)
 		return 0;
-	return RotationState::IsRotated((Item*)item) ? 1 : 0;
+	return RotationState::IsRotated(static_cast<Item*>(item)) ? 1 : 0;
 }
 
 __declspec(dllexport) int KenshiRotate_CanRotate(void* item)
 {
 	if (!item)
 		return 0;
-	Item* it = (Item*)item;
+	Item* it = static_cast<Item*>(item);
 	if (it->isEquipped)
 		return 0;
 	if (it->itemWidth == it->itemHeight)
@@ -832,7 +655,7 @@ __declspec(dllexport) int KenshiRotate_SetRotated(void* item, int rotated)
 {
 	if (!item)
 		return 0;
-	return RotationState::ApplyRotationState((Item*)item, rotated != 0) ? 1 : 0;
+	return RotationState::ApplyRotationState(static_cast<Item*>(item), rotated != 0) ? 1 : 0;
 }
 
 __declspec(dllexport) void KenshiRotate_RefreshVisuals(void* inventoryGUI)
@@ -840,7 +663,7 @@ __declspec(dllexport) void KenshiRotate_RefreshVisuals(void* inventoryGUI)
 	if (!inventoryGUI)
 		return;
 
-	InventoryGUI* gui = (InventoryGUI*)inventoryGUI;
+	InventoryGUI* gui = static_cast<InventoryGUI*>(inventoryGUI);
 
 	// Cell dimensions in pixels — constant across all sections
 	int cellW = InventoryIcon::getItemPosition(1, 0).left;

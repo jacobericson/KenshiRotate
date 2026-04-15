@@ -1,5 +1,3 @@
-// KenshiRotate Settings — Config persistence, Options -> Mods tab UI, key capture
-
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #include <Windows.h>
@@ -23,10 +21,6 @@
 #include <sstream>
 #include <string>
 
-// =====================================================
-// Internal state
-// =====================================================
-
 static BindType g_bindType = BIND_MIDDLE_MOUSE;
 static OIS::KeyCode g_keyCode = OIS::KC_UNASSIGNED;
 static BindType g_bindType2 = BIND_NONE;
@@ -40,10 +34,6 @@ static MyGUI::Button* g_changeBtn = NULL;
 static MyGUI::TextBox* g_keyLabel2 = NULL;
 static MyGUI::TextBox* g_conflictLabel2 = NULL;
 static MyGUI::Button* g_changeBtn2 = NULL;
-
-// =====================================================
-// Config file I/O
-// =====================================================
 
 static std::string GetConfigFilePath()
 {
@@ -98,6 +88,7 @@ static void LoadConfig()
 		}
 		else if (k == "bind_type_2")
 		{
+			// Secondary accepts BIND_NONE (2) — disabling it is valid.
 			int val = atoi(v.c_str());
 			if (val >= 0 && val <= 2)
 				g_bindType2 = (BindType)val;
@@ -130,11 +121,7 @@ static void SaveConfig()
 	file << ss.str();
 }
 
-// =====================================================
-// Widget search (RE_Kenshi pattern — Kenshi prefixes
-// widget names as "prefix_Name", so we match by suffix)
-// =====================================================
-
+// Kenshi prefixes widget names as "prefix_Name"; match by suffix (RE_Kenshi pattern).
 static MyGUI::Widget* FindWidget(MyGUI::EnumeratorWidgetPtr enumerator,
 	const std::string& name)
 {
@@ -157,10 +144,6 @@ static MyGUI::Widget* FindWidget(MyGUI::EnumeratorWidgetPtr enumerator,
 	}
 	return NULL;
 }
-
-// =====================================================
-// Key display helpers
-// =====================================================
 
 static bool IsBlacklisted(OIS::KeyCode kc)
 {
@@ -231,10 +214,6 @@ static void UpdateLabels()
 		g_conflictLabel2->setCaption(GetConflictText(g_bindType2, g_keyCode2));
 }
 
-// =====================================================
-// Button callbacks
-// =====================================================
-
 static void OnChangePressed(MyGUI::Widget* sender)
 {
 	g_captureTarget = (sender == g_changeBtn2) ? 2 : 1;
@@ -269,10 +248,6 @@ static void OnResetPressed(MyGUI::Widget* sender)
 	if (g_changeBtn2 != NULL)
 		g_changeBtn2->setCaption(Tr(TR_CHANGE));
 }
-
-// =====================================================
-// Key capture scanning
-// =====================================================
 
 static OIS::KeyCode ScanForPressedKey()
 {
@@ -314,10 +289,6 @@ static void ApplyBinding(int target, BindType type, OIS::KeyCode kc)
 	DebugLog(std::string("[KenshiRotate] ") + which + name);
 }
 
-// =====================================================
-// Public API
-// =====================================================
-
 void RotateSettings::Init()
 {
 	LoadConfig();
@@ -341,12 +312,8 @@ void RotateSettings::InjectModsTabUI()
 	if (tabCtrl == NULL || tabCtrl->getItemCount() == 0)
 		return;
 
-	// Find the MODS tab using language-independent strategies.
-	// getItemNameAt() returns the localized caption, which differs by language.
-	// Strategy 1: match by caption "MODS" (English)
-	// Strategy 2: match by widget name suffix (layout XML name, never translated)
-	// Strategy 3: fall back to index 5 (vanilla always creates 6 tabs: General,
-	//             Gameplay, Graphics, Audio, Controls, Mods)
+	// Language-independent MODS tab lookup: caption match ("MODS" — English only),
+	// widget-name suffix (layout XML names aren't translated), then fixed index 5.
 	MyGUI::TabItem* tab = NULL;
 	for (size_t i = 0; i < tabCtrl->getItemCount(); ++i)
 	{
@@ -395,7 +362,6 @@ void RotateSettings::InjectModsTabUI()
 	float x = 0.60f;
 	float w = 0.25f;
 
-	// Section header
 	MyGUI::TextBox* header = tab->createWidgetReal<MyGUI::TextBox>(
 		"Kenshi_TextboxStandardText",
 		x, baseY, w, 0.04f,
@@ -403,14 +369,12 @@ void RotateSettings::InjectModsTabUI()
 		"KenshiRotateHeader");
 	header->setCaption("KenshiRotate");
 
-	// Current key display
 	g_keyLabel = tab->createWidgetReal<MyGUI::TextBox>(
 		"Kenshi_TextboxStandardText",
 		x, baseY + 0.045f, w, 0.04f,
 		MyGUI::Align::Top | MyGUI::Align::Left,
 		"KenshiRotateKeyLabel");
 
-	// Change button
 	g_changeBtn = tab->createWidgetReal<MyGUI::Button>(
 		"Kenshi_Button1",
 		x, baseY + 0.09f, 0.12f, 0.04f,
@@ -419,7 +383,6 @@ void RotateSettings::InjectModsTabUI()
 	g_changeBtn->setCaption(Tr(TR_CHANGE));
 	g_changeBtn->eventMouseButtonClick += MyGUI::newDelegate(OnChangePressed);
 
-	// Reset button
 	MyGUI::Button* resetBtn = tab->createWidgetReal<MyGUI::Button>(
 		"Kenshi_Button1",
 		x + 0.13f, baseY + 0.09f, 0.12f, 0.04f,
@@ -428,21 +391,18 @@ void RotateSettings::InjectModsTabUI()
 	resetBtn->setCaption(Tr(TR_RESET));
 	resetBtn->eventMouseButtonClick += MyGUI::newDelegate(OnResetPressed);
 
-	// Conflict warning
 	g_conflictLabel = tab->createWidgetReal<MyGUI::TextBox>(
 		"Kenshi_TextboxStandardText",
 		x, baseY + 0.135f, w, 0.04f,
 		MyGUI::Align::Top | MyGUI::Align::Left,
 		"KenshiRotateConflict");
 
-	// Secondary key display
 	g_keyLabel2 = tab->createWidgetReal<MyGUI::TextBox>(
 		"Kenshi_TextboxStandardText",
 		x, baseY + 0.18f, w, 0.04f,
 		MyGUI::Align::Top | MyGUI::Align::Left,
 		"KenshiRotateKeyLabel2");
 
-	// Secondary change button
 	g_changeBtn2 = tab->createWidgetReal<MyGUI::Button>(
 		"Kenshi_Button1",
 		x, baseY + 0.225f, 0.12f, 0.04f,
@@ -451,7 +411,6 @@ void RotateSettings::InjectModsTabUI()
 	g_changeBtn2->setCaption(Tr(TR_CHANGE));
 	g_changeBtn2->eventMouseButtonClick += MyGUI::newDelegate(OnChangePressed);
 
-	// Secondary reset button
 	MyGUI::Button* resetBtn2 = tab->createWidgetReal<MyGUI::Button>(
 		"Kenshi_Button1",
 		x + 0.13f, baseY + 0.225f, 0.12f, 0.04f,
@@ -460,7 +419,6 @@ void RotateSettings::InjectModsTabUI()
 	resetBtn2->setCaption(Tr(TR_RESET));
 	resetBtn2->eventMouseButtonClick += MyGUI::newDelegate(OnResetPressed);
 
-	// Secondary conflict warning
 	g_conflictLabel2 = tab->createWidgetReal<MyGUI::TextBox>(
 		"Kenshi_TextboxStandardText",
 		x, baseY + 0.27f, w, 0.04f,
@@ -476,7 +434,6 @@ void RotateSettings::ProcessCapture()
 	if (g_captureTarget == 0)
 		return;
 
-	// Escape cancels capture
 	if (key != NULL && key->keyboard != NULL &&
 		key->keyboard->isKeyDown(OIS::KC_ESCAPE))
 	{
@@ -488,14 +445,12 @@ void RotateSettings::ProcessCapture()
 		return;
 	}
 
-	// Middle mouse button
 	if (GetAsyncKeyState(VK_MBUTTON) & 0x8000)
 	{
 		ApplyBinding(g_captureTarget, BIND_MIDDLE_MOUSE, OIS::KC_UNASSIGNED);
 		return;
 	}
 
-	// Keyboard scan
 	OIS::KeyCode pressed = ScanForPressedKey();
 	if (pressed != OIS::KC_UNASSIGNED)
 	{

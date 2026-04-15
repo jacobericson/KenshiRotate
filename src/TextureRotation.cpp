@@ -38,7 +38,6 @@ bool TextureRotation::GetOrCreateRotatedTexture(const std::string& originalName,
 	if (originalName.empty())
 		return false;
 
-	// Check cache
 	std::map<std::string, RotatedTextureInfo>::iterator cacheIt =
 		s_cache.find(originalName);
 	if (cacheIt != s_cache.end())
@@ -49,7 +48,6 @@ bool TextureRotation::GetOrCreateRotatedTexture(const std::string& originalName,
 
 	std::string rotatedName = originalName + "__rot90";
 
-	// Get the original texture
 	Ogre::TexturePtr srcTex = Ogre::TextureManager::getSingleton().getByName(originalName);
 	if (srcTex.isNull())
 	{
@@ -57,7 +55,6 @@ bool TextureRotation::GetOrCreateRotatedTexture(const std::string& originalName,
 		return false;
 	}
 
-	// Convert texture to an Image for pixel access
 	Ogre::Image srcImage;
 	srcTex->convertToImage(srcImage);
 
@@ -127,7 +124,7 @@ bool TextureRotation::GetOrCreateRotatedTexture(const std::string& originalName,
 			for (Ogre::uint32 row = 0; row < potH; row++)
 			{
 				memcpy(
-					(Ogre::uchar*)dest + row * gpuRowBytes,
+					static_cast<Ogre::uchar*>(dest) + row * gpuRowBytes,
 					potData + row * srcRowBytes,
 					copyBytes);
 			}
@@ -158,7 +155,7 @@ void TextureRotation::ApplyRotatedTexture(InventoryIcon* icon)
 	if (!icon || !icon->image)
 		return;
 
-	std::string texName = ((MyGUI::SkinItem*)icon->image)->_getTextureName();
+	std::string texName = static_cast<MyGUI::SkinItem*>(icon->image)->_getTextureName();
 	// Don't re-rotate an already-rotated texture
 	if (texName.find("__rot90") != std::string::npos)
 		return;
@@ -168,9 +165,9 @@ void TextureRotation::ApplyRotatedTexture(InventoryIcon* icon)
 	{
 		// Set texture at the SkinItem level, then crop UVs to the actual
 		// image area within the POT texture via the SubSkin.
-		((MyGUI::SkinItem*)icon->image)->_setTextureName(info.name);
+		static_cast<MyGUI::SkinItem*>(icon->image)->_setTextureName(info.name);
 		MyGUI::ISubWidgetRect* main =
-			((MyGUI::SkinItem*)icon->image)->getSubWidgetMain();
+			static_cast<MyGUI::SkinItem*>(icon->image)->getSubWidgetMain();
 		if (main)
 			main->_setUVSet(MyGUI::FloatRect(0, 0, info.uMax, info.vMax));
 	}
@@ -181,15 +178,15 @@ void TextureRotation::RestoreOriginalTexture(InventoryIcon* icon)
 	if (!icon || !icon->image)
 		return;
 
-	std::string texName = ((MyGUI::SkinItem*)icon->image)->_getTextureName();
+	std::string texName = static_cast<MyGUI::SkinItem*>(icon->image)->_getTextureName();
 	size_t pos = texName.find("__rot90");
 	if (pos != std::string::npos)
 	{
 		std::string originalName = texName.substr(0, pos);
 		// Restore texture and reset UVs to full original texture
-		((MyGUI::SkinItem*)icon->image)->_setTextureName(originalName);
+		static_cast<MyGUI::SkinItem*>(icon->image)->_setTextureName(originalName);
 		MyGUI::ISubWidgetRect* main =
-			((MyGUI::SkinItem*)icon->image)->getSubWidgetMain();
+			static_cast<MyGUI::SkinItem*>(icon->image)->getSubWidgetMain();
 		if (main)
 			main->_setUVSet(MyGUI::FloatRect(0, 0, 1, 1));
 	}

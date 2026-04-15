@@ -14,6 +14,7 @@
     X(ERR_SQUARE,           "Cannot rotate: item is square")                  \
     X(ERR_HOOKS_FAILED,     "Cannot rotate: save/load hooks failed")          \
     X(ERR_NO_SPACE,         "Cannot rotate: not enough space")                \
+    X(WARN_HOOKS_FAILED,    "KenshiRotate: some hooks failed to install (see log); features may not work correctly") \
     X(NONE,                 "None")                                           \
     X(SECONDARY_KEY_PREFIX, "Secondary key: ")
 

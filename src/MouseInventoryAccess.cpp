@@ -36,7 +36,7 @@ void MouseInventoryAccess::FindShadowWidget()
 }
 
 // MouseInventory layout (Kenshi 1.0.65 kenshi_x64.exe). Re-derive via IDA on patch.
-static const int OFF_HELD_ITEM     =  48; // Item* — NULL when cursor empty
+static const int OFF_HELD_ITEM     =  48; // Item* — validation probe only, not used for held-item access
 static const int OFF_GRAB_X        = 128; // int32 — itemTopLeft.x - mouse.x
 static const int OFF_GRAB_Y        = 132; // int32
 static const int OFF_SHADOW_WIDGET = 184; // MyGUI::Widget* — set in ctor
@@ -49,19 +49,19 @@ static bool ValidateCandidate(void* candidate, MyGUI::Widget* shadowWidget)
 		return false;
 
 	MEMORY_BASIC_INFORMATION mbi;
-	if (!VirtualQuery((LPCVOID)((char*)candidate + OFF_SHADOW_WIDGET), &mbi, sizeof(mbi)))
+	if (!VirtualQuery((LPCVOID)(reinterpret_cast<char*>(candidate) + OFF_SHADOW_WIDGET), &mbi, sizeof(mbi)))
 		return false;
 	if (!(mbi.State & MEM_COMMIT))
 		return false;
 
 	__try
 	{
-		void* shadowField = *(void**)((char*)candidate + OFF_SHADOW_WIDGET);
-		if (shadowField != (void*)shadowWidget)
+		void* shadowField = *reinterpret_cast<void**>(reinterpret_cast<char*>(candidate) + OFF_SHADOW_WIDGET);
+		if (shadowField != static_cast<void*>(shadowWidget))
 			return false;
 
 		// Secondary validation: Item* should be NULL or point to committed memory
-		void* itemField = *(void**)((char*)candidate + OFF_HELD_ITEM);
+		void* itemField = *reinterpret_cast<void**>(reinterpret_cast<char*>(candidate) + OFF_HELD_ITEM);
 		if (itemField != NULL)
 		{
 			MEMORY_BASIC_INFORMATION mbi2;
@@ -88,8 +88,8 @@ static const size_t MOUSE_INVENTORY_RVA = 0x2131B18;
 // Used as a fallback when the known RVA doesn't match.
 static void* ScanForMouseInventory(HMODULE base, MyGUI::Widget* shadowWidget)
 {
-	IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
-	IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((char*)base + dos->e_lfanew);
+	IMAGE_DOS_HEADER* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+	IMAGE_NT_HEADERS* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<char*>(base) + dos->e_lfanew);
 	IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
 
 	for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
@@ -97,12 +97,12 @@ static void* ScanForMouseInventory(HMODULE base, MyGUI::Widget* shadowWidget)
 		if (!(sec->Characteristics & IMAGE_SCN_MEM_WRITE))
 			continue;
 
-		char* start = (char*)base + sec->VirtualAddress;
+		char* start = reinterpret_cast<char*>(base) + sec->VirtualAddress;
 		size_t size = sec->Misc.VirtualSize;
 
 		for (size_t off = 0; off + sizeof(void*) <= size; off += sizeof(void*))
 		{
-			void* candidate = *(void**)(start + off);
+			void* candidate = *reinterpret_cast<void**>(start + off);
 			if (ValidateCandidate(candidate, shadowWidget))
 				return candidate;
 		}
@@ -123,7 +123,7 @@ void MouseInventoryAccess::FindMouseInventory()
 		return;
 
 	// Fast path: known RVA from Kenshi 1.0.65
-	void* candidate = *(void**)((char*)base + MOUSE_INVENTORY_RVA);
+	void* candidate = *reinterpret_cast<void**>(reinterpret_cast<char*>(base) + MOUSE_INVENTORY_RVA);
 	if (ValidateCandidate(candidate, s_shadowWidget))
 	{
 		s_mouseInventory = candidate;
@@ -145,8 +145,9 @@ bool MouseInventoryAccess::GetGrabOffset(int& outX, int& outY)
 {
 	if (!s_mouseInventory)
 		return false;
-	outX = *(int*)((char*)s_mouseInventory + OFF_GRAB_X);
-	outY = *(int*)((char*)s_mouseInventory + OFF_GRAB_Y);
+	char* base = reinterpret_cast<char*>(s_mouseInventory);
+	outX = *reinterpret_cast<int*>(base + OFF_GRAB_X);
+	outY = *reinterpret_cast<int*>(base + OFF_GRAB_Y);
 	return true;
 }
 
@@ -154,8 +155,9 @@ void MouseInventoryAccess::SetGrabOffset(int x, int y)
 {
 	if (!s_mouseInventory)
 		return;
-	*(int*)((char*)s_mouseInventory + OFF_GRAB_X) = x;
-	*(int*)((char*)s_mouseInventory + OFF_GRAB_Y) = y;
+	char* base = reinterpret_cast<char*>(s_mouseInventory);
+	*reinterpret_cast<int*>(base + OFF_GRAB_X) = x;
+	*reinterpret_cast<int*>(base + OFF_GRAB_Y) = y;
 }
 
 MyGUI::Widget* MouseInventoryAccess::GetShadowWidget()

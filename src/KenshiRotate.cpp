@@ -74,6 +74,7 @@ public:
 	using InventoryGUI::refreshSection;
 	using InventoryGUI::placeItemFromMouse;
 	using InventoryGUI::takeCertainAmountFrom;
+	using InventoryGUI::sectionMouseButtonReleased;
 };
 
 static Item* CallGetMouseItem(InventoryGUI* gui)
@@ -173,6 +174,31 @@ bool placeItemFromMouse_hook(InventoryGUI* thisptr, const std::string sectionNam
 }
 
 // =====================================================
+// Hook: sectionMouseButtonReleased — mark right-click quick-transfer window
+// =====================================================
+// Kenshi's right-click auto-trade path (RClickAutoTrade / RClickAutoTradeAll)
+// returns InventoryGUI::TradeResult, a class with a constructor — can't be
+// hooked directly under MSVC x64's hidden-return-pointer ABI.  Instead we
+// hook the mouse-release dispatcher one level up and set a flag while the
+// right-click is being handled.  canStackWith/addQuantity consult the flag
+// to bypass the rotation-equality check so that quick-transfer merges into
+// a destination stack of the opposite rotation.  Destination stack's
+// rotation state wins — we do not migrate rotation to the destination.
+
+static bool g_inQuickTransfer = false;
+
+void (*sectionMouseButtonReleased_orig)(InventoryGUI*, MyGUI::Widget*, int, int, MyGUI::MouseButton) = NULL;
+
+void sectionMouseButtonReleased_hook(InventoryGUI* thisptr, MyGUI::Widget* sender, int left, int top, MyGUI::MouseButton id)
+{
+	bool wasRight = (id == MyGUI::MouseButton::Right);
+	bool prev = g_inQuickTransfer;
+	if (wasRight) g_inQuickTransfer = true;
+	sectionMouseButtonReleased_orig(thisptr, sender, left, top, id);
+	if (wasRight) g_inQuickTransfer = prev;
+}
+
+// =====================================================
 // Hook: canStackWith — prevent cross-rotation stacking
 // =====================================================
 
@@ -185,6 +211,11 @@ bool canStackWith_hook(InventoryItemBase* thisptr, InventoryItemBase* other)
 
 	if (!canStackWith_orig(thisptr, other))
 		return false;
+
+	// Bypass rotation check during right-click quick-transfer — destination
+	// stack's rotation wins.
+	if (g_inQuickTransfer)
+		return true;
 
 	bool thisRotated = RotationState::IsRotated((Item*)thisptr);
 	bool otherRotated = RotationState::IsRotated((Item*)other);
@@ -205,7 +236,9 @@ void (*addQuantity_orig)(InventoryItemBase*, int*, Item*, InventorySection*) = N
 
 void addQuantity_hook(InventoryItemBase* thisptr, int* amount, Item* addedItem, InventorySection* section)
 {
-	if (addedItem)
+	// Bypass rotation check during right-click quick-transfer — destination
+	// stack's rotation wins.
+	if (addedItem && !g_inQuickTransfer)
 	{
 		bool thisRotated = RotationState::IsRotated((Item*)thisptr);
 		bool addedRotated = RotationState::IsRotated(addedItem);
@@ -741,6 +774,19 @@ __declspec(dllexport) void startPlugin()
 	else
 	{
 		DebugLog("[KenshiRotate] Hooked addQuantity OK");
+	}
+
+	// --- Hook 11: sectionMouseButtonReleased — mark quick-transfer window ---
+	if (KenshiLib::SUCCESS != KenshiLib::AddHook(
+		(void*)KenshiLib::GetRealAddress(&InventoryGUIAccess::sectionMouseButtonReleased),
+		(void*)sectionMouseButtonReleased_hook,
+		(void**)&sectionMouseButtonReleased_orig))
+	{
+		ErrorLog("[KenshiRotate] Failed to hook sectionMouseButtonReleased");
+	}
+	else
+	{
+		DebugLog("[KenshiRotate] Hooked sectionMouseButtonReleased OK");
 	}
 
 	DebugLog("[KenshiRotate] Plugin started successfully");

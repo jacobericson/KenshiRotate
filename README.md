@@ -7,13 +7,17 @@ Rotate items in the grid-based inventory by hovering over them and pressing your
 ## Features
 
 - Rotate any non-square item (e.g., turn a 7x1 katana into 1x7) to optimize inventory space
+- Works on both grid-hover items and cursor-held items (cursor-held takes priority)
 - Works in all inventory types: character, backpack, container
 - True 90-degree texture rotation with correct icon rendering
 - Charge bars (food, medkits) display correctly on rotated items
 - Rotation state persists across save/load
-- Configurable key binding (middle mouse or any keyboard key) via Options > MODS tab
+- Configurable key binding with primary + optional secondary bind via Options > MODS tab
 - Key conflict detection warns if your chosen key is already bound in-game
-- Safe fallback if rotation doesn't fit: item reverts to original orientation or is dropped if no longer fits.
+- Safe fallback if rotation doesn't fit: item reverts to original orientation
+- Rotated and unrotated items cannot stack together during drag/drop (prevents visual desync); right-click quick-transfer bypasses this so stacks merge into the destination's rotation
+- Items split from rotated stacks inherit the rotation
+- Public C API for cross-mod integration (e.g., StackSort auto-sort with rotation)
 
 ## Requirements
 
@@ -29,7 +33,7 @@ Rotate items in the grid-based inventory by hovering over them and pressing your
 
 Open any inventory and **middle-click** (default) on a non-square item to rotate it. The item's grid dimensions and icon will swap (e.g., a 2x1 item becomes 1x2). Press the rotation key again to rotate back.
 
-Rotation is blocked if there isn't enough space for the rotated dimensions.
+Rotation works both on items in the grid (hover and press) and on items held on the cursor. Rotation is blocked if there isn't enough space for the rotated dimensions.
 
 ### Changing the rotation key
 
@@ -45,16 +49,21 @@ Link dependencies: `KenshiLib.lib`, `MyGUIEngine_x64.lib`, `OgreMain_x64.lib`, `
 
 ## How It Works
 
-The plugin hooks six game functions via KenshiLib:
+The plugin hooks eleven game functions via KenshiLib:
 
-1. **`InventoryGUI::update`** - Detects the configured rotation key and performs the rotation (remove item, swap dimensions, re-add with validation)
-2. **`InventoryIcon::_CONSTRUCTOR`** - Resizes icons and applies rotated textures when inventory icons are created
-3. **`InventorySectionGUI::getBestPositionSlot`** - Fixes grid highlight bounds for rotated items
-4. **`Item::serialiseInInventory`** - Saves rotation state into the item's GameData record
-5. **`Item::loadFromSerialiseInInventory`** - Restores rotation state on load
-6. **`OptionsWindow::update`** - Injects the key binding UI into the MODS tab and handles key capture
+1. **`InventoryGUI::update`** — Detects the configured rotation key and performs the rotation (remove item, swap dimensions, re-add with validation). Also handles cursor-held rotation and caches hovered item position for grab offset correction.
+2. **`InventoryIcon::_CONSTRUCTOR`** — Resizes icons and applies rotated textures when inventory icons are created. Detects cursor icons for cursor-held rotation tracking.
+3. **`InventorySectionGUI::getBestPositionSlot`** — Fixes grid highlight bounds for rotated items
+4. **`Item::serialiseInInventory`** — Saves rotation state into the item's GameData record
+5. **`Item::loadFromSerialiseInInventory`** — Restores rotation state on load
+6. **`OptionsWindow::update`** — Injects the key binding UI into the MODS tab and handles key capture
+7. **`InventoryGUI::placeItemFromMouse`** — Tracks when cursor-held items are placed or swapped
+8. **`InventoryItemBase::canStackWith`** — Prevents rotated and unrotated items from stacking together (bypassed during right-click quick-transfer)
+9. **`InventoryGUI::takeCertainAmountFrom`** — Propagates rotation state when splitting stacks
+10. **`InventoryItemBase::addQuantity`** — Defense-in-depth block on cross-rotation quantity transfer (bypassed during right-click quick-transfer)
+11. **`InventoryGUI::sectionMouseButtonReleased`** — Marks the right-click quick-transfer window so hooks 8 and 10 allow the merge
 
-Rotation state is persisted by injecting a custom boolean field into each item's save record. No external state files are needed - rotation data travels with the item through Kenshi's native save system.
+Rotation state is persisted by injecting a custom boolean field into each item's save record. No external state files are needed — rotation data travels with the item through Kenshi's native save system.
 
 ### Compatibility
 
@@ -66,9 +75,7 @@ If you uninstall KenshiRotate, all previously rotated items will revert to their
 
 ## Known Limitations
 
-- Rotation only works on hover, not while holding an item on the cursor
-- Stacking a rotated item (e.g., food) into a non-rotated stack causes the entire stack to appear rotated until the rotated item is removed from the stack
-- Loading a save, then loading a different save without saving in between, can leave stale rotation tracking from the first save. In theory this could cause an item to falsely appear rotated, but the odds of a handle collision are incredibly small (handles include index, serial, container, and container serial fields that would all need to match)
+- Square items (e.g., 2x2) cannot be rotated (rotation would have no effect)
 
 ## License
 

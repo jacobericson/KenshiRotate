@@ -35,28 +35,33 @@ void MouseInventoryAccess::FindShadowWidget()
 	}
 }
 
+// MouseInventory layout (Kenshi 1.0.65 kenshi_x64.exe). Re-derive via IDA on patch.
+static const int OFF_HELD_ITEM     =  48; // Item* — NULL when cursor empty
+static const int OFF_GRAB_X        = 128; // int32 — itemTopLeft.x - mouse.x
+static const int OFF_GRAB_Y        = 132; // int32
+static const int OFF_SHADOW_WIDGET = 184; // MyGUI::Widget* — set in ctor
+
 // Validate a MouseInventory candidate pointer by checking the shadow widget
-// field at +184 and the Item* field at +48.
+// and Item* fields.
 static bool ValidateCandidate(void* candidate, MyGUI::Widget* shadowWidget)
 {
 	if (!candidate)
 		return false;
 
 	MEMORY_BASIC_INFORMATION mbi;
-	if (!VirtualQuery((LPCVOID)((char*)candidate + 184), &mbi, sizeof(mbi)))
+	if (!VirtualQuery((LPCVOID)((char*)candidate + OFF_SHADOW_WIDGET), &mbi, sizeof(mbi)))
 		return false;
 	if (!(mbi.State & MEM_COMMIT))
 		return false;
 
 	__try
 	{
-		void* shadowField = *(void**)((char*)candidate + 184);
+		void* shadowField = *(void**)((char*)candidate + OFF_SHADOW_WIDGET);
 		if (shadowField != (void*)shadowWidget)
 			return false;
 
-		// Secondary validation: Item* at +48 should be NULL
-		// or point to committed memory
-		void* itemField = *(void**)((char*)candidate + 48);
+		// Secondary validation: Item* should be NULL or point to committed memory
+		void* itemField = *(void**)((char*)candidate + OFF_HELD_ITEM);
 		if (itemField != NULL)
 		{
 			MEMORY_BASIC_INFORMATION mbi2;
@@ -140,8 +145,8 @@ bool MouseInventoryAccess::GetGrabOffset(int& outX, int& outY)
 {
 	if (!s_mouseInventory)
 		return false;
-	outX = *(int*)((char*)s_mouseInventory + 128);
-	outY = *(int*)((char*)s_mouseInventory + 132);
+	outX = *(int*)((char*)s_mouseInventory + OFF_GRAB_X);
+	outY = *(int*)((char*)s_mouseInventory + OFF_GRAB_Y);
 	return true;
 }
 
@@ -149,8 +154,8 @@ void MouseInventoryAccess::SetGrabOffset(int x, int y)
 {
 	if (!s_mouseInventory)
 		return;
-	*(int*)((char*)s_mouseInventory + 128) = x;
-	*(int*)((char*)s_mouseInventory + 132) = y;
+	*(int*)((char*)s_mouseInventory + OFF_GRAB_X) = x;
+	*(int*)((char*)s_mouseInventory + OFF_GRAB_Y) = y;
 }
 
 MyGUI::Widget* MouseInventoryAccess::GetShadowWidget()

@@ -44,18 +44,7 @@
 #include "RotationState.h"
 #include "TextureRotation.h"
 #include "MouseInventoryAccess.h"
-
-// Cursor-held item tracking. Set when an InventoryIcon is created with
-// parent==NULL (makeIconForItem creates cursor icons this way).
-// Cleared when placeItemFromMouse succeeds.
-static Item* g_cursorItem = NULL;
-static InventoryIcon* g_cursorIcon = NULL;
-
-// Cached absolute pixel position of the hovered rotated item's top-left corner.
-// Updated every frame while mouse is over a rotated grid item.
-// Used at pickup time to compute the correct unclamped grab offset.
-static MyGUI::IntPoint g_hoveredItemAbsPos;
-static bool g_hasHoveredItemPos = false;
+#include "CursorState.h"
 
 
 // =====================================================
@@ -63,9 +52,9 @@ static bool g_hasHoveredItemPos = false;
 // =====================================================
 
 void (*InventoryGUI_update_orig)(InventoryGUI*) = NULL;
-static bool g_lastTriggerState = false;
 
-// Expose protected methods via accessor subclass.
+// Accessor-only subclass: member-function pointers supply protected-method
+// addresses to AddHook / GetRealAddress. No instances exist.
 class InventoryGUIAccess : public InventoryGUI
 {
 public:
@@ -157,19 +146,16 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 bool (*placeItemFromMouse_orig)(InventoryGUI*, const std::string,
 	const MyGUI::types::TPoint<int>&) = NULL;
 
+// On a drop-swap, setupCursorItem re-fires _CONSTRUCTOR mid-call with the
+// swapped item, so CursorState is already re-populated. Only Clear() when
+// the cursor item is unchanged (plain drop).
 bool placeItemFromMouse_hook(InventoryGUI* thisptr, const std::string sectionName,
 	const MyGUI::types::TPoint<int>& mousePos)
 {
-	Item* prevCursorItem = g_cursorItem;
+	Item* prevCursorItem = CursorState::GetItem();
 	bool result = placeItemFromMouse_orig(thisptr, sectionName, mousePos);
-	if (result && g_cursorItem == prevCursorItem)
-	{
-		// Normal placement — cursor is now empty.
-		g_cursorItem = NULL;
-		g_cursorIcon = NULL;
-	}
-	// Swap: setupCursorItem fired _CONSTRUCTOR which already set
-	// g_cursorItem/g_cursorIcon to the swapped item — keep them.
+	if (result && CursorState::GetItem() == prevCursorItem)
+		CursorState::Clear();
 	return result;
 }
 
@@ -275,8 +261,8 @@ Item* takeCertainAmountFrom_hook(InventoryGUI* thisptr, Item* baseItem, int amou
 
 static void TryRotateCursorItem()
 {
-	Item* item = g_cursorItem;
-	InventoryIcon* icon = g_cursorIcon;
+	Item* item = CursorState::GetItem();
+	InventoryIcon* icon = CursorState::GetIcon();
 
 	if (!item || !icon)
 		return;
@@ -284,8 +270,7 @@ static void TryRotateCursorItem()
 	// Validate icon still references our tracked item (catches stale state)
 	if (icon->item != item)
 	{
-		g_cursorItem = NULL;
-		g_cursorIcon = NULL;
+		CursorState::Clear();
 		return;
 	}
 
@@ -372,9 +357,9 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 
 	// Cache hovered rotated item position for pickup offset correction.
 	// Only runs when no item is held on cursor.
-	if (g_cursorItem == NULL)
+	if (!CursorState::IsHolding())
 	{
-		g_hasHoveredItemPos = false;
+		CursorState::ClearHoverPos();
 		Item* hoverItem = CallGetMouseItem(thisptr);
 		InventoryGUI* hoverGUI = thisptr;
 		if (!hoverItem && thisptr->childInventory)
@@ -389,9 +374,8 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 			if (mapIt != hoverGUI->inventorySections.end())
 			{
 				InventorySectionGUI* secGUI = mapIt->second;
-				g_hoveredItemAbsPos = secGUI->getItemAbsolutePosition(
-					hoverItem->inventoryPos.x, hoverItem->inventoryPos.y);
-				g_hasHoveredItemPos = true;
+				CursorState::StoreHoverPos(secGUI->getItemAbsolutePosition(
+					hoverItem->inventoryPos.x, hoverItem->inventoryPos.y));
 			}
 		}
 	}
@@ -423,13 +407,14 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	// (character body + any open container like a weapon stand), so if the
 	// character's call consumed the edge when the mouse was over a container,
 	// the container's later call would never see the rising edge.
-	if (triggerDown && !g_lastTriggerState)
+	static bool lastTriggerState = false;
+	if (triggerDown && !lastTriggerState)
 	{
 		bool rotated = false;
-		if (g_cursorItem != NULL)
+		if (CursorState::IsHolding())
 		{
 			// Rotate cursor-held item. Grid rotation is blocked while holding.
-			if (g_cursorIcon != NULL)
+			if (CursorState::GetIcon() != NULL)
 			{
 				TryRotateCursorItem();
 				rotated = true;
@@ -454,11 +439,11 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 		}
 
 		if (rotated)
-			g_lastTriggerState = true;
+			lastTriggerState = true;
 	}
 	else if (!triggerDown)
 	{
-		g_lastTriggerState = false;
+		lastTriggerState = false;
 	}
 }
 
@@ -477,20 +462,20 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 	// Track cursor icons — makeIconForItem creates them with parent==NULL
 	if (parent == NULL && item != NULL)
 	{
-		g_cursorItem = item;
-		g_cursorIcon = thisptr;
+		CursorState::Set(item, thisptr);
 
 		// Fix pickup offset for rotated items.
 		// setupCursorItem clamps the grab offset to template dimensions.
 		// Recompute the correct offset from the cached pre-pickup grid position.
-		if (RotationState::IsRotated(item) && g_hasHoveredItemPos && MouseInventoryAccess::IsReady())
+		MyGUI::IntPoint hoverPos;
+		if (RotationState::IsRotated(item) && CursorState::TryGetHoverPos(hoverPos) && MouseInventoryAccess::IsReady())
 		{
 			MyGUI::InputManager* inputMgr = MyGUI::InputManager::getInstancePtr();
 			if (inputMgr)
 			{
 				const MyGUI::IntPoint& mousePos = inputMgr->getMousePosition();
-				int correctGrabX = g_hoveredItemAbsPos.left - mousePos.left;
-				int correctGrabY = g_hoveredItemAbsPos.top - mousePos.top;
+				int correctGrabX = hoverPos.left - mousePos.left;
+				int correctGrabY = hoverPos.top - mousePos.top;
 
 				// Apply same half-cell clamping as setupCursorItem but with instance dims
 				int cellW = InventoryIcon::getItemPosition(1, 0).left;
@@ -512,7 +497,7 @@ InventoryIcon* InventoryIcon_ctor_hook(InventoryIcon* thisptr, Item* item,
 				MouseInventoryAccess::SetGrabOffset(correctGrabX, correctGrabY);
 			}
 		}
-		g_hasHoveredItemPos = false;
+		CursorState::ClearHoverPos();
 	}
 
 	if (item && RotationState::IsRotated(item))
@@ -722,9 +707,8 @@ __declspec(dllexport) void startPlugin()
 		DebugLog("[KenshiRotate] Hooked Item::loadFromSerialiseInInventory OK");
 	}
 
-	// Note: if only one persistence hook succeeded (e.g. load but not save),
-	// rotations would load from existing saves but never persist new ones —
-	// creating silent data loss. We block rotation entirely if either fails.
+	// TryRotateItem / TryRotateCursorItem / KenshiRotate_CanRotate each refuse
+	// with TR_ERR_HOOKS_FAILED if either flag is false; startup only logs.
 	if (!RotationState::hookSaveOK || !RotationState::hookLoadOK)
 		ErrorLog("[KenshiRotate] WARNING: persistence hooks incomplete — rotation will be disabled");
 

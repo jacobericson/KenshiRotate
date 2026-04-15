@@ -82,6 +82,8 @@ static void LoadConfig()
 		std::string k = line.substr(0, eq);
 		std::string v = line.substr(eq + 1);
 
+		// Primary rejects BIND_NONE (2): if secondary is also unset, the user would
+		// have no working rotation key. Secondary allows 0/1/2 by design.
 		if (k == "bind_type")
 		{
 			int val = atoi(v.c_str());

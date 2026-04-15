@@ -82,6 +82,7 @@
     <ClCompile Include="src\RotationState.cpp" />
     <ClCompile Include="src\TextureRotation.cpp" />
     <ClCompile Include="src\MouseInventoryAccess.cpp" />
+    <ClCompile Include="src\CursorState.cpp" />
     <ClCompile Include="src\Settings.cpp" />
     <ClCompile Include="src\Translate.cpp" />
   </ItemGroup>
@@ -89,6 +90,7 @@
     <ClInclude Include="src\RotationState.h" />
     <ClInclude Include="src\TextureRotation.h" />
     <ClInclude Include="src\MouseInventoryAccess.h" />
+    <ClInclude Include="src\CursorState.h" />
     <ClInclude Include="src\Settings.h" />
     <ClInclude Include="src\Translate.h" />
   </ItemGroup>

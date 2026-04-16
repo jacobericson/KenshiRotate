@@ -35,84 +35,60 @@ void MouseInventoryAccess::FindShadowWidget()
 	}
 }
 
-// MouseInventory layout (Kenshi 1.0.65 kenshi_x64.exe). Re-derive via IDA on patch.
+// MouseInventory layout (Kenshi 1.0.65). Offsets validated against both
+// shipped editions. The object is 192 bytes; reads must stay in that window.
 static const int OFF_HELD_ITEM     =  48; // Item* — validation probe only, not used for held-item access
 static const int OFF_GRAB_X        = 128; // int32 — itemTopLeft.x - mouse.x
 static const int OFF_GRAB_Y        = 132; // int32
 static const int OFF_SHADOW_WIDGET = 184; // MyGUI::Widget* — set in ctor
+static const size_t MOUSE_INVENTORY_SIZE = 192;
 
-// Validate a MouseInventory candidate pointer by checking the shadow widget
-// and Item* fields.
+// RVA of the MouseInventory singleton pointer in each shipped Kenshi edition.
+static const size_t RVA_GOG   = 0x212FA88;
+static const size_t RVA_STEAM = 0x2131B18;
+
+// Validate a MouseInventory candidate. VirtualQuery covers the full object
+// before any dereference, so no SEH is needed: a wrong-edition RVA either
+// yields NULL, a non-committed pointer, or a committed region whose +184
+// field won't match our shadow widget.
 static bool ValidateCandidate(void* candidate, MyGUI::Widget* shadowWidget)
 {
 	if (!candidate)
 		return false;
 
 	MEMORY_BASIC_INFORMATION mbi;
-	if (!VirtualQuery((LPCVOID)(reinterpret_cast<char*>(candidate) + OFF_SHADOW_WIDGET), &mbi, sizeof(mbi)))
+	if (!VirtualQuery((LPCVOID)candidate, &mbi, sizeof(mbi)))
 		return false;
 	if (!(mbi.State & MEM_COMMIT))
 		return false;
-
-	__try
-	{
-		void* shadowField = *reinterpret_cast<void**>(reinterpret_cast<char*>(candidate) + OFF_SHADOW_WIDGET);
-		if (shadowField != static_cast<void*>(shadowWidget))
-			return false;
-
-		// Secondary validation: Item* should be NULL or point to committed memory
-		void* itemField = *reinterpret_cast<void**>(reinterpret_cast<char*>(candidate) + OFF_HELD_ITEM);
-		if (itemField != NULL)
-		{
-			MEMORY_BASIC_INFORMATION mbi2;
-			if (!VirtualQuery((LPCVOID)itemField, &mbi2, sizeof(mbi2))
-				|| !(mbi2.State & MEM_COMMIT))
-				return false;
-		}
-
-		return true;
-	}
-	__except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
-		? EXCEPTION_EXECUTE_HANDLER
-		: EXCEPTION_CONTINUE_SEARCH)
-	{
+	if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
 		return false;
-	}
-}
 
-// Known RVA of the MouseInventory singleton pointer (qword_142131B18).
-// From MouseInventory::getSingleton in Kenshi 1.0.65 kenshi_x64.exe.
-static const size_t MOUSE_INVENTORY_RVA = 0x2131B18;
+	// Ensure the whole 192-byte object fits in this committed region.
+	size_t regionEnd = (size_t)mbi.BaseAddress + mbi.RegionSize;
+	if ((size_t)candidate + MOUSE_INVENTORY_SIZE > regionEnd)
+		return false;
 
-// Scan the PE .data section for the MouseInventory singleton pointer.
-// Used as a fallback when the known RVA doesn't match.
-static void* ScanForMouseInventory(HMODULE base, MyGUI::Widget* shadowWidget)
-{
-	IMAGE_DOS_HEADER* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
-	IMAGE_NT_HEADERS* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<char*>(base) + dos->e_lfanew);
-	IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+	if (*reinterpret_cast<void**>(reinterpret_cast<char*>(candidate) + OFF_SHADOW_WIDGET) != static_cast<void*>(shadowWidget))
+		return false;
 
-	for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+	// Secondary validation: Item* is NULL or points to committed memory.
+	void* itemField = *reinterpret_cast<void**>(reinterpret_cast<char*>(candidate) + OFF_HELD_ITEM);
+	if (itemField != NULL)
 	{
-		if (!(sec->Characteristics & IMAGE_SCN_MEM_WRITE))
-			continue;
-
-		char* start = reinterpret_cast<char*>(base) + sec->VirtualAddress;
-		size_t size = sec->Misc.VirtualSize;
-
-		for (size_t off = 0; off + sizeof(void*) <= size; off += sizeof(void*))
-		{
-			void* candidate = *reinterpret_cast<void**>(start + off);
-			if (ValidateCandidate(candidate, shadowWidget))
-				return candidate;
-		}
+		MEMORY_BASIC_INFORMATION mbi2;
+		if (!VirtualQuery((LPCVOID)itemField, &mbi2, sizeof(mbi2)))
+			return false;
+		if (!(mbi2.State & MEM_COMMIT))
+			return false;
+		if (mbi2.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+			return false;
 	}
 
-	return NULL;
+	return true;
 }
 
-// Find the MouseInventory singleton. Tries the known RVA first (instant),
-// falls back to a full .data section scan if validation fails.
+// If no RVA validates, grab-offset correction is disabled but rotation still works.
 void MouseInventoryAccess::FindMouseInventory()
 {
 	if (s_mouseInventory || !s_shadowWidget)
@@ -122,23 +98,19 @@ void MouseInventoryAccess::FindMouseInventory()
 	if (!base)
 		return;
 
-	// Fast path: known RVA from Kenshi 1.0.65
-	void* candidate = *reinterpret_cast<void**>(reinterpret_cast<char*>(base) + MOUSE_INVENTORY_RVA);
-	if (ValidateCandidate(candidate, s_shadowWidget))
+	static const size_t RVAs[] = { RVA_GOG, RVA_STEAM };
+	for (size_t i = 0; i < sizeof(RVAs) / sizeof(RVAs[0]); ++i)
 	{
-		s_mouseInventory = candidate;
-		DebugLog("[KenshiRotate] Found MouseInventory singleton via known RVA");
-		return;
+		void* candidate = *reinterpret_cast<void**>(reinterpret_cast<char*>(base) + RVAs[i]);
+		if (ValidateCandidate(candidate, s_shadowWidget))
+		{
+			s_mouseInventory = candidate;
+			DebugLog("[KenshiRotate] Found MouseInventory singleton");
+			return;
+		}
 	}
 
-	// Slow path: full .data scan (different binary or unexpected layout)
-	DebugLog("[KenshiRotate] Known RVA missed, falling back to .data scan");
-	s_mouseInventory = ScanForMouseInventory(base, s_shadowWidget);
-
-	if (s_mouseInventory)
-		DebugLog("[KenshiRotate] Found MouseInventory singleton via .data scan");
-	else
-		ErrorLog("[KenshiRotate] Failed to find MouseInventory singleton");
+	ErrorLog("[KenshiRotate] Unknown Kenshi build - grab offset correction disabled");
 }
 
 bool MouseInventoryAccess::GetGrabOffset(int& outX, int& outY)

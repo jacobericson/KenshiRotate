@@ -20,4 +20,10 @@ public:
 	static void ClearHoverPos();
 	// Does NOT auto-clear — callers clear explicitly when the cursor branch ends.
 	static bool TryGetHoverPos(MyGUI::IntPoint& out);
+
+private:
+	static Item* s_item;
+	static InventoryIcon* s_icon;
+	static MyGUI::IntPoint s_hoverPos;
+	static bool s_hasHoverPos;
 };

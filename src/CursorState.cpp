@@ -1,9 +1,9 @@
 #include "CursorState.h"
 
-static Item* s_item = NULL;
-static InventoryIcon* s_icon = NULL;
-static MyGUI::IntPoint s_hoverPos;
-static bool s_hasHoverPos = false;
+Item* CursorState::s_item = NULL;
+InventoryIcon* CursorState::s_icon = NULL;
+MyGUI::IntPoint CursorState::s_hoverPos;
+bool CursorState::s_hasHoverPos = false;
 
 void CursorState::Set(Item* item, InventoryIcon* icon)
 {

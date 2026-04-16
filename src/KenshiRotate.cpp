@@ -53,6 +53,94 @@ static Item* CallGetMouseItem(InventoryGUI* gui)
 	return static_cast<InventoryGUIAccess*>(gui)->getMouseItem();
 }
 
+// chargesProgress not touched — InventoryIcon::update() auto-sizes it per frame.
+static void RefreshIcon(InventoryIcon* icon)
+{
+	if (!icon || !icon->item)
+		return;
+
+	Item* item = icon->item;
+	int cellW = InventoryIcon::getItemPosition(1, 0).left;
+	int cellH = InventoryIcon::getItemPosition(0, 1).top;
+	int expectedW = item->itemWidth * cellW;
+	int expectedH = item->itemHeight * cellH;
+
+	MyGUI::types::TSize<int> sz = icon->getSize();
+	if (sz.width != expectedW || sz.height != expectedH)
+	{
+		MyGUI::Widget* w = icon->getWidget();
+		if (w) w->setSize(expectedW, expectedH);
+		if (icon->image) icon->image->setSize(expectedW, expectedH);
+		if (icon->quantityText) icon->quantityText->setSize(expectedW, expectedH);
+	}
+
+	if (RotationState::IsRotated(item))
+		TextureRotation::ApplyRotatedTexture(icon);
+	else
+		TextureRotation::RestoreOriginalTexture(icon);
+}
+
+// No-op if the icon isn't found (e.g. cursor-held, not yet created).
+static void RefreshIconForItem(InventoryGUI* gui, Item* item)
+{
+	if (!gui || !item)
+		return;
+
+	for (auto mapIt = gui->inventorySections.begin();
+		mapIt != gui->inventorySections.end(); ++mapIt)
+	{
+		InventorySectionGUI* sectionGUI = mapIt->second;
+		if (!sectionGUI)
+			continue;
+
+		for (size_t i = 0; i < sectionGUI->itemsIcons.size(); ++i)
+		{
+			InventoryIcon* icon = sectionGUI->itemsIcons[i];
+			if (icon && icon->item == item)
+			{
+				RefreshIcon(icon);
+				return;
+			}
+		}
+	}
+}
+
+// Silent (no player messages) — caller handles error UX and preconditions.
+static bool RotateInSection(Item* item, InventoryGUI* gui, bool targetRotated)
+{
+	if (!item || !gui)
+		return false;
+
+	std::string sectionName = item->inventorySection;
+	Inventory* inv = gui->_NV_getInventory();
+	InventorySection* section = inv ? inv->getSection(sectionName) : NULL;
+	if (!section)
+		return false;
+
+	bool wasRotated = RotationState::IsRotated(item);
+	if (wasRotated == targetRotated)
+		return true;
+
+	section->removeItem(item);
+	RotationState::ApplyRotationState(item, targetRotated);
+
+	if (!section->_NV_addItem(item, 1))
+	{
+		RotationState::ApplyRotationState(item, wasRotated);
+		if (!section->_NV_addItem(item, 1))
+			ErrorLog("[KenshiRotate] CRITICAL: failed to revert item after rotation rejection");
+		return false;
+	}
+
+	auto mapIt = gui->inventorySections.find(sectionName);
+	if (mapIt != gui->inventorySections.end())
+	{
+		mapIt->second->refreshIcons(section);
+		RefreshIconForItem(gui, item);
+	}
+	return true;
+}
+
 static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 {
 	if (item->isEquipped)
@@ -71,54 +159,8 @@ static void TryRotateItem(Item* item, InventoryGUI* sourceGUI)
 		return;
 	}
 
-	std::string sectionName = item->inventorySection;
-
-	Inventory* inv = sourceGUI->_NV_getInventory();
-	InventorySection* section = inv ? inv->getSection(sectionName) : NULL;
-	if (!section)
-		return;
-
-	bool wasRotated = RotationState::IsRotated(item);
-
-	section->removeItem(item);
-	RotationState::ApplyRotationState(item, !wasRotated);
-
-	if (!section->_NV_addItem(item, 1))
-	{
-		// Doesn't fit rotated — revert and put back
-		RotationState::ApplyRotationState(item, wasRotated);
+	if (!RotateInSection(item, sourceGUI, !RotationState::IsRotated(item)))
 		ou->showPlayerAMessage(Tr(TR_ERR_NO_SPACE), false);
-		if (!section->_NV_addItem(item, 1))
-			ErrorLog("[KenshiRotate] CRITICAL: failed to revert item after rotation rejection");
-		return;
-	}
-
-	auto mapIt = sourceGUI->inventorySections.find(sectionName);
-	if (mapIt == sourceGUI->inventorySections.end())
-		return;
-
-	InventorySectionGUI* sectionGUI = mapIt->second;
-	sectionGUI->refreshIcons(section);
-
-	for (size_t i = 0; i < sectionGUI->itemsIcons.size(); ++i)
-	{
-		InventoryIcon* icon = sectionGUI->itemsIcons[i];
-		if (icon && icon->item == item)
-		{
-			MyGUI::types::TSize<int> sz = icon->getSize();
-			int newW = sz.height;
-			int newH = sz.width;
-			MyGUI::Widget* w = icon->getWidget();
-			if (w) w->setSize(newW, newH);
-			if (icon->image) icon->image->setSize(newW, newH);
-			if (icon->quantityText) icon->quantityText->setSize(newW, newH);
-			if (!wasRotated)
-				TextureRotation::ApplyRotatedTexture(icon);
-			else
-				TextureRotation::RestoreOriginalTexture(icon);
-			break;
-		}
-	}
 }
 
 bool (*placeItemFromMouse_orig)(InventoryGUI*, const std::string,
@@ -651,11 +693,29 @@ __declspec(dllexport) int KenshiRotate_CanRotate(void* item)
 	return 1;
 }
 
-__declspec(dllexport) int KenshiRotate_SetRotated(void* item, int rotated)
+// inventoryGUI != NULL: atomic rotate with layout validation, reverts on fit failure.
+// inventoryGUI == NULL: state-only swap (batch callers handle placement + UI).
+// Cursor-held items not handled — inventorySection is empty on cursor.
+__declspec(dllexport) int KenshiRotate_SetRotated(void* item, int rotated, void* inventoryGUI)
 {
 	if (!item)
 		return 0;
-	return RotationState::ApplyRotationState(static_cast<Item*>(item), rotated != 0) ? 1 : 0;
+
+	Item* it = static_cast<Item*>(item);
+	if (it->isEquipped)
+		return 0;
+	if (it->itemWidth == it->itemHeight)
+		return 0;
+	if (!RotationState::hookSaveOK || !RotationState::hookLoadOK)
+		return 0;
+
+	bool target = (rotated != 0);
+	if (RotationState::IsRotated(it) == target)
+		return 1;
+
+	if (inventoryGUI)
+		return RotateInSection(it, static_cast<InventoryGUI*>(inventoryGUI), target) ? 1 : 0;
+	return RotationState::ApplyRotationState(it, target) ? 1 : 0;
 }
 
 __declspec(dllexport) void KenshiRotate_RefreshVisuals(void* inventoryGUI)
@@ -664,11 +724,6 @@ __declspec(dllexport) void KenshiRotate_RefreshVisuals(void* inventoryGUI)
 		return;
 
 	InventoryGUI* gui = static_cast<InventoryGUI*>(inventoryGUI);
-
-	// Cell dimensions in pixels — constant across all sections
-	int cellW = InventoryIcon::getItemPosition(1, 0).left;
-	int cellH = InventoryIcon::getItemPosition(0, 1).top;
-
 	for (auto mapIt = gui->inventorySections.begin();
 		mapIt != gui->inventorySections.end(); ++mapIt)
 	{
@@ -677,31 +732,7 @@ __declspec(dllexport) void KenshiRotate_RefreshVisuals(void* inventoryGUI)
 			continue;
 
 		for (size_t i = 0; i < sectionGUI->itemsIcons.size(); ++i)
-		{
-			InventoryIcon* icon = sectionGUI->itemsIcons[i];
-			if (!icon || !icon->item)
-				continue;
-
-			// Compute expected size from item's runtime dims (already swapped
-			// for rotated items). Works whether the ctor hook already fired
-			// (refreshAllSections recreated icons) or not (reused widgets).
-			int expectedW = icon->item->itemWidth * cellW;
-			int expectedH = icon->item->itemHeight * cellH;
-			MyGUI::types::TSize<int> sz = icon->getSize();
-
-			if (sz.width != expectedW || sz.height != expectedH)
-			{
-				MyGUI::Widget* w = icon->getWidget();
-				if (w) w->setSize(expectedW, expectedH);
-				if (icon->image) icon->image->setSize(expectedW, expectedH);
-				if (icon->quantityText) icon->quantityText->setSize(expectedW, expectedH);
-			}
-
-			if (RotationState::IsRotated(icon->item))
-				TextureRotation::ApplyRotatedTexture(icon);
-			else
-				TextureRotation::RestoreOriginalTexture(icon);
-		}
+			RefreshIcon(sectionGUI->itemsIcons[i]);
 	}
 }
 

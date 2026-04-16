@@ -75,7 +75,15 @@ If you uninstall KenshiRotate, all previously rotated items will revert to their
 
 ## Known Limitations
 
-- Square items (e.g., 2x2) cannot be rotated (rotation would have no effect)
+None.
+
+## Bug Reports
+
+If you run into a problem, [open an issue](../../issues/new) and include:
+
+- **Other mods installed** — list of all mods you have enabled
+- **RE_Kenshi version** — shown in the launcher or in `RE_Kenshi_log.txt`
+- **RE_Kenshi_log.txt** — found in your Kenshi game directory
 
 ## License
 

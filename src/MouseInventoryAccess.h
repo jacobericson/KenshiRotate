@@ -11,6 +11,7 @@ public:
 	static void SetGrabOffset(int x, int y);
 	static MyGUI::Widget* GetShadowWidget();
 	static bool IsReady();
+	static bool HasHeldItem();
 
 private:
 	static void* s_mouseInventory;

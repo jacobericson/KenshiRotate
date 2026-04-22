@@ -141,3 +141,11 @@ bool MouseInventoryAccess::IsReady()
 {
 	return s_mouseInventory != NULL;
 }
+
+bool MouseInventoryAccess::HasHeldItem()
+{
+	if (!s_mouseInventory)
+		return false;
+	void* item = *reinterpret_cast<void**>(reinterpret_cast<char*>(s_mouseInventory) + OFF_HELD_ITEM);
+	return item != NULL;
+}

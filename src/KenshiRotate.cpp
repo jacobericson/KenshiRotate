@@ -354,8 +354,11 @@ void InventoryGUI_update_hook(InventoryGUI* thisptr)
 	MouseInventoryAccess::FindShadowWidget();
 	MouseInventoryAccess::FindMouseInventory();
 
-	// Cache hovered rotated item position for pickup offset correction.
-	// Only runs when no item is held on cursor.
+	// Detect stale cursor state: dropping an item to the game world bypasses
+	// placeItemFromMouse, leaving CursorState with dangling pointers.
+	if (CursorState::IsHolding() && MouseInventoryAccess::IsReady() && !MouseInventoryAccess::HasHeldItem())
+		CursorState::Clear();
+
 	if (!CursorState::IsHolding())
 	{
 		CursorState::ClearHoverPos();
